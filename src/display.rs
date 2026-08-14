@@ -369,6 +369,172 @@ pub struct HostComputer {
     changed: Arc<Notify>,
 }
 
+/// QEMU input control without registering a display listener.
+///
+/// Short-lived actions must use this type. Registering a display listener for
+/// every key or pointer action makes QEMU stream full scanouts to processes
+/// that are about to exit, which can retain substantial queued framebuffer
+/// memory when the guest is continuously repainting.
+pub struct HostInput {
+    _bus: Connection,
+    mouse: QemuMouseProxy<'static>,
+    keyboard: QemuKeyboardProxy<'static>,
+    session_id: Uuid,
+    sink: Arc<dyn EventSink>,
+}
+
+impl HostInput {
+    pub async fn connect(
+        bus_socket: &Path,
+        session_id: Uuid,
+        sink: Arc<dyn EventSink>,
+    ) -> Result<Self> {
+        let address = format!("unix:path={}", bus_socket.display());
+        let bus = zbus::connection::Builder::address(address.as_str())?
+            .build()
+            .await
+            .context("connect private input bus")?;
+        let path = "/org/qemu/Display1/Console_0";
+        let mouse = QemuMouseProxy::builder(&bus)
+            .path(path)?
+            .build()
+            .await?
+            .to_owned();
+        let keyboard = QemuKeyboardProxy::builder(&bus)
+            .path(path)?
+            .build()
+            .await?
+            .to_owned();
+        Ok(Self {
+            _bus: bus,
+            mouse,
+            keyboard,
+            session_id,
+            sink,
+        })
+    }
+
+    fn record_input(&self, kind: &str, action_id: Uuid, payload: serde_json::Value) -> Result<u64> {
+        let event = RawEvent::observed(
+            self.session_id,
+            "input",
+            kind,
+            json!({"actionId": action_id, "detail": payload}),
+        );
+        let timestamp = event.host_monotonic_ns;
+        self.sink.record(event)?;
+        Ok(timestamp)
+    }
+
+    fn complete_input(
+        &self,
+        kind: &str,
+        action_id: Uuid,
+        started_ns: u64,
+    ) -> Result<ActionReceipt> {
+        let completed_ns = monotonic_ns();
+        self.sink.record(RawEvent::observed_at(
+            self.session_id,
+            completed_ns,
+            "input",
+            "input.action.completed",
+            json!({
+                "actionId": action_id,
+                "actionKind": kind,
+                "startedNs": started_ns,
+                "completedNs": completed_ns,
+                "actionDurationNs": completed_ns.saturating_sub(started_ns)
+            }),
+        ))?;
+        Ok(ActionReceipt {
+            action_id,
+            started_ns,
+            completed_ns,
+        })
+    }
+
+    pub async fn move_pointer(&self, x: u32, y: u32) -> Result<ActionReceipt> {
+        let action_id = Uuid::new_v4();
+        let started_ns = self.record_input("pointer.move", action_id, json!({"x": x, "y": y}))?;
+        if self.mouse.is_absolute().await? {
+            self.mouse.set_abs_position(x, y).await?;
+        } else {
+            bail!("relative pointer is unsupported until its current position is known");
+        }
+        self.complete_input("pointer.move", action_id, started_ns)
+    }
+
+    pub async fn mouse_down(&self, button: MouseButton) -> Result<ActionReceipt> {
+        let action_id = Uuid::new_v4();
+        let started_ns = self.record_input(
+            "pointer.down",
+            action_id,
+            json!({"button": format!("{button:?}")}),
+        )?;
+        self.mouse.press(button as u32).await?;
+        self.complete_input("pointer.down", action_id, started_ns)
+    }
+
+    pub async fn mouse_up(&self, button: MouseButton) -> Result<ActionReceipt> {
+        let action_id = Uuid::new_v4();
+        let started_ns = self.record_input(
+            "pointer.up",
+            action_id,
+            json!({"button": format!("{button:?}")}),
+        )?;
+        self.mouse.release(button as u32).await?;
+        self.complete_input("pointer.up", action_id, started_ns)
+    }
+
+    pub async fn key_down(&self, keycode: u32) -> Result<ActionReceipt> {
+        let action_id = Uuid::new_v4();
+        let started_ns = self.record_input("key.down", action_id, json!({"keycode": keycode}))?;
+        self.keyboard.press(keycode).await?;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        self.complete_input("key.down", action_id, started_ns)
+    }
+
+    pub async fn key_up(&self, keycode: u32) -> Result<ActionReceipt> {
+        let action_id = Uuid::new_v4();
+        let started_ns = self.record_input("key.up", action_id, json!({"keycode": keycode}))?;
+        self.keyboard.release(keycode).await?;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        self.complete_input("key.up", action_id, started_ns)
+    }
+
+    pub async fn key_press(&self, keycode: u32) -> Result<ActionReceipt> {
+        let receipt = self.key_down(keycode).await?;
+        self.key_up(keycode).await?;
+        Ok(receipt)
+    }
+
+    pub async fn type_text(&self, text: &str) -> Result<()> {
+        for character in text.chars() {
+            for transition in keystroke_sequence(character)
+                .with_context(|| format!("no US keyboard mapping for {character:?}"))?
+            {
+                let (kind, keycode) = match transition {
+                    KeyTransition::Down(keycode) => ("key.down", keycode),
+                    KeyTransition::Up(keycode) => ("key.up", keycode),
+                };
+                let action_id = Uuid::new_v4();
+                let started_ns = self.record_input(
+                    kind,
+                    action_id,
+                    json!({"keycode": keycode, "character": character.to_string()}),
+                )?;
+                match transition {
+                    KeyTransition::Down(_) => self.keyboard.press(keycode).await?,
+                    KeyTransition::Up(_) => self.keyboard.release(keycode).await?,
+                }
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                self.complete_input(kind, action_id, started_ns)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 impl HostComputer {
     pub async fn connect(
         bus_socket: &Path,
