@@ -23,6 +23,8 @@ for (const trial of schedule) {
   const record={blindLabel:trial.blindLabel,repetition:trial.repetition,condition:trial.condition,capabilities:manifest.conditions[trial.condition].capabilities,model:manifest.model,modelSettings:manifest.modelSettings,durationMs:Number(ended-started)/1e6,agent,evaluator:{...evaluator,stdout:undefined,stderr:evaluator.stderr},metrics};
   await writeFile(join(trialRoot,'result.json'),`${JSON.stringify(record,null,2)}\n`);
   await appendFile(join(output,'results.jsonl'),`${JSON.stringify(record)}\n`);
+  const failed=agent.exitCode!==0||agent.timedOut||evaluator.exitCode!==0||evaluator.timedOut;
+  if(failed){process.stdout.write(`${JSON.stringify({blindLabel:trial.blindLabel,repetition:trial.repetition,completed:false})}\n`);throw new Error(`trial ${trial.blindLabel} failed`);}
   process.stdout.write(`${JSON.stringify({blindLabel:trial.blindLabel,repetition:trial.repetition,completed:true})}\n`);
 }
 
