@@ -36,6 +36,10 @@ packages:
   - xwayland
 
 write_files:
+  - path: /etc/udev/rules.d/70-avm-accessibility.rules
+    permissions: '0644'
+    content: |
+      SUBSYSTEM=="virtio-ports", ATTR{name}=="org.avm.accessibility", GROUP="dialout", MODE="0660"
   - path: /etc/systemd/system/workspace.mount
     permissions: '0644'
     content: |
