@@ -215,6 +215,8 @@ impl Listener {
         }
     }
 
+    // QEMU owns this D-Bus method signature.
+    #[allow(clippy::too_many_arguments)]
     async fn update(
         &mut self,
         x: i32,
@@ -274,6 +276,8 @@ impl Listener {
     }
 
     #[zbus(name = "ScanoutDMABUF")]
+    // QEMU owns this D-Bus method signature.
+    #[allow(clippy::too_many_arguments)]
     async fn scanout_dmabuf(
         &mut self,
         _fd: Fd<'_>,

@@ -71,6 +71,8 @@ struct AudioOutListener {
 
 #[zbus::interface(name = "org.qemu.Display1.AudioOutListener", spawn = false)]
 impl AudioOutListener {
+    // QEMU owns this D-Bus method signature.
+    #[allow(clippy::too_many_arguments)]
     async fn init(
         &mut self,
         id: u64,

@@ -148,6 +148,8 @@ impl DevelopmentDeclarationInput {
 }
 
 impl DevelopmentDeclaration {
+    // The constructor mirrors the externally persisted declaration schema.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         intended_behavior_change: String,
         causal_hypothesis: String,

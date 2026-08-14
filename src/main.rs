@@ -315,6 +315,8 @@ enum Command {
         #[arg(long)]
         input: PathBuf,
     },
+    // Preserve the explicit public CLI name `evidence-command`.
+    #[allow(clippy::enum_variant_names)]
     EvidenceCommand {
         #[arg(long)]
         policy: PathBuf,
