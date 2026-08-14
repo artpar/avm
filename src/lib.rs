@@ -7,6 +7,7 @@ pub mod event;
 pub mod experience;
 pub mod fingerprint;
 pub mod framebuffer;
+pub mod performance;
 pub mod policy;
 pub mod qmp;
 pub mod query;

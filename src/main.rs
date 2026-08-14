@@ -11,6 +11,8 @@ use avm::audio::{
     AudioInterpretationKind, CommandAudioAdapter, CommandAudioAdapterConfig,
     DEFAULT_AUDIO_EVENT_PROMPT, DEFAULT_TRANSCRIPTION_PROMPT, interpret_audio_event,
 };
+#[cfg(target_os = "linux")]
+use avm::performance::{ProcessSnapshot, ResourceMeasurement, build_report, tree_usage};
 
 use anyhow::{Context, Result, bail, ensure};
 use avm::storage::ArtifactStore;
@@ -373,6 +375,13 @@ enum Command {
         audio_event_id: uuid::Uuid,
         #[arg(long)]
         prompt: Option<String>,
+    },
+    #[cfg(target_os = "linux")]
+    PerformanceMeasure {
+        #[arg(long)]
+        run: PathBuf,
+        #[arg(long, default_value_t = 10_000)]
+        duration_ms: u64,
     },
     #[cfg(target_os = "linux")]
     Smoke {
@@ -835,6 +844,10 @@ async fn main() -> Result<()> {
             audio_event_id,
             prompt,
         } => audio_interpret(&run, &adapter_config, audio_event_id, prompt.as_deref())?,
+        #[cfg(target_os = "linux")]
+        Command::PerformanceMeasure { run, duration_ms } => {
+            performance_measure(&run, duration_ms).await?
+        }
         #[cfg(target_os = "linux")]
         Command::Smoke {
             run,
@@ -1680,6 +1693,106 @@ fn audio_interpret(
     record_canonical(&config, event)?;
     println!("{}", serde_json::to_string_pretty(&interpretation)?);
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+async fn performance_measure(run: &Path, duration_ms: u64) -> Result<()> {
+    ensure!(
+        duration_ms > 0,
+        "performance phase duration must be positive"
+    );
+    let config = load_run(run)?;
+    config.ensure_current_host_boot()?;
+    ensure!(
+        VmController::new(config.clone()).is_running(),
+        "VM must be running to measure sensory overhead"
+    );
+    let paths = config.paths();
+    let qemu_pid = std::fs::read_to_string(&paths.qemu_pid)?
+        .trim()
+        .parse::<u32>()
+        .context("parse QEMU pid")?;
+    let supervisor_pid = std::process::id();
+    let duration = Duration::from_millis(duration_ms);
+
+    let qemu_baseline_start = ProcessSnapshot::capture(qemu_pid)?;
+    let supervisor_baseline_start = ProcessSnapshot::capture(supervisor_pid)?;
+    tokio::time::sleep(duration).await;
+    let qemu_baseline_end = ProcessSnapshot::capture(qemu_pid)?;
+    let supervisor_baseline_end = ProcessSnapshot::capture(supervisor_pid)?;
+    let baseline = qemu_baseline_start.phase(
+        &qemu_baseline_end,
+        duration,
+        (&supervisor_baseline_start, &supervisor_baseline_end),
+    );
+
+    let event_count_before = event_line_count(&paths.events)?;
+    let event_bytes_before = std::fs::metadata(&paths.events)
+        .map(|value| value.len())
+        .unwrap_or(0);
+    let artifacts_before = tree_usage(&paths.artifacts)?;
+    let start_ns = monotonic_ns();
+    let qemu_instrumented_start = ProcessSnapshot::capture(qemu_pid)?;
+    let supervisor_instrumented_start = ProcessSnapshot::capture(supervisor_pid)?;
+    let computer = connect_computer(&config).await?;
+    tokio::time::sleep(duration).await;
+    drop(computer);
+    let end_ns = monotonic_ns();
+    let measured_duration = Duration::from_nanos(end_ns.saturating_sub(start_ns));
+    let qemu_instrumented_end = ProcessSnapshot::capture(qemu_pid)?;
+    let supervisor_instrumented_end = ProcessSnapshot::capture(supervisor_pid)?;
+    let instrumented = qemu_instrumented_start.phase(
+        &qemu_instrumented_end,
+        measured_duration,
+        (&supervisor_instrumented_start, &supervisor_instrumented_end),
+    );
+    let event_count_after = event_line_count(&paths.events)?;
+    let event_bytes_after = std::fs::metadata(&paths.events)
+        .map(|value| value.len())
+        .unwrap_or(0);
+    let artifacts_after = tree_usage(&paths.artifacts)?;
+    let seconds = measured_duration.as_secs_f64();
+    let resource = ResourceMeasurement {
+        phase_duration_ms: duration_ms,
+        qemu_cpu_percent_difference: instrumented.qemu_cpu_percent - baseline.qemu_cpu_percent,
+        guest_vcpu_host_cpu_percent_difference: instrumented.guest_vcpu_host_cpu_percent
+            - baseline.guest_vcpu_host_cpu_percent,
+        supervisor_cpu_percent_difference: instrumented.supervisor_cpu_percent
+            - baseline.supervisor_cpu_percent,
+        event_count_growth: event_count_after.saturating_sub(event_count_before),
+        event_bytes_growth: event_bytes_after.saturating_sub(event_bytes_before),
+        event_bytes_per_second: event_bytes_after.saturating_sub(event_bytes_before) as f64 / seconds,
+        artifact_file_growth: artifacts_after.file_count.saturating_sub(artifacts_before.file_count),
+        artifact_bytes_growth: artifacts_after.byte_count.saturating_sub(artifacts_before.byte_count),
+        artifact_bytes_per_second: artifacts_after.byte_count.saturating_sub(artifacts_before.byte_count) as f64 / seconds,
+        baseline,
+        instrumented,
+        note: "Paired idle phases on one running VM. vCPU thread host time is a guest CPU proxy; phase differences are measurements, not causal proof.".into(),
+    };
+    let store = experience(&config)?;
+    let events = store.history(Some(start_ns), Some(end_ns), &[])?;
+    let report = build_report(&events, &paths.artifacts, start_ns, end_ns, Some(resource))?;
+    let mut event = RawEvent::observed(
+        config.id,
+        "performance",
+        "performance.measurement",
+        serde_json::to_value(&report)?,
+    );
+    event.provenance = Provenance::Derived;
+    record_canonical(&config, event)?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn event_line_count(path: &Path) -> Result<u64> {
+    if !path.exists() {
+        return Ok(0);
+    }
+    Ok(std::fs::read(path)?
+        .into_iter()
+        .filter(|byte| *byte == b'\n')
+        .count() as u64)
 }
 
 #[cfg(target_os = "linux")]
