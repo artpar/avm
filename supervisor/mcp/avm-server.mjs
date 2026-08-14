@@ -15,6 +15,7 @@ const tools=[
   tool('avm_accessibility','Observe a fresh native accessibility tree and events.',{durationMs:{type:'integer',minimum:1,maximum:60000}}),
   tool('avm_browser_observe','Record a CDP browser snapshot, network, console, performance, screenshot, and trace.',{durationMs:{type:'integer',minimum:1,maximum:60000}})
 ];
+if(config.localAvm&&config.remoteChannel)tools.push(tool('avm_publish','Publish the current fingerprinted local candidate through the fixed AVM remote channel.',{}));
 
 const lines=readline.createInterface({input:process.stdin,crlfDelay:Infinity});
 for await(const line of lines){if(!line.trim())continue;let request;try{request=JSON.parse(line)}catch{continue}if(request.id===undefined)continue;try{let result;if(request.method==='initialize')result={protocolVersion:request.params?.protocolVersion||'2025-06-18',capabilities:{tools:{listChanged:false}},serverInfo:{name:'avm-workstation',version:'1'}};else if(request.method==='tools/list')result={tools};else if(request.method==='tools/call')result=await callTool(request.params?.name,request.params?.arguments||{});else throw new Error(`unsupported method ${request.method}`);send({jsonrpc:'2.0',id:request.id,result})}catch(error){send({jsonrpc:'2.0',id:request.id,result:{content:[{type:'text',text:error.message}],isError:true}})}}
@@ -32,6 +33,7 @@ async function callTool(name,args){
   if(name==='avm_query')return text(await query(args.query));
   if(name==='avm_accessibility')return text(await runAvm(['accessibility-observe','--run',config.remoteRun,'--duration-ms',integer(args.durationMs||5000)]));
   if(name==='avm_browser_observe')return text(await runAvm(['browser-observe','--run',config.remoteRun,'--endpoint',config.browserEndpoint||'http://127.0.0.1:9222','--script',config.remoteBrowserScript||'/home/artpar/avm/supervisor/browser/observer.mjs','--duration-ms',integer(args.durationMs||5000)]));
+  if(name==='avm_publish'){if(!config.localAvm?.startsWith('/')||!config.remoteChannel?.startsWith('/'))throw new Error('publish channel is not configured');return text(await run(config.localAvm,['remote-publish','--channel',config.remoteChannel]))}
   throw new Error(`unknown AVM tool ${name}`)
 }
 function integer(value){if(!Number.isSafeInteger(Number(value)))throw new Error('expected integer');return String(value)}

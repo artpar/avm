@@ -1,6 +1,6 @@
 # AVM workstation MCP server
 
-`avm-server.mjs` runs locally beside Codex. It exposes eight narrow tools for authoritative capture, recorded input, history, structured queries, AT-SPI observation, and CDP observation. Each call uses `gcloud compute ssh` or `scp` with an explicit project, zone, instance, remote AVM binary, and run config. It has no arbitrary-shell tool, and candidate code receives neither its config nor Codex/GCE credentials.
+`avm-server.mjs` runs locally beside Codex. It exposes narrow tools for authoritative capture, recorded input, history, structured queries, AT-SPI observation, and CDP observation. When `localAvm` and `remoteChannel` are configured, a ninth tool publishes only the fixed fingerprinted candidate through AVM's existing remote channel. Each VM call uses `gcloud compute ssh` or `scp` with an explicit project, zone, instance, remote AVM binary, and run config. It has no arbitrary-shell tool, and candidate code receives neither its config nor Codex/GCE credentials.
 
 Example Codex CLI overrides:
 
