@@ -417,8 +417,74 @@ enum Command {
         x: u32,
         #[arg(long)]
         y: u32,
+        #[arg(long, value_enum, default_value_t = PointerButton::Left)]
+        button: PointerButton,
         #[arg(long, default_value_t = 1_000)]
         wait_after_ms: u64,
+    },
+    #[cfg(target_os = "linux")]
+    ActPointer {
+        #[arg(long)]
+        run: PathBuf,
+        #[arg(long)]
+        x: u32,
+        #[arg(long)]
+        y: u32,
+    },
+    #[cfg(target_os = "linux")]
+    ActButton {
+        #[arg(long)]
+        run: PathBuf,
+        #[arg(long, value_enum, default_value_t = PointerButton::Left)]
+        button: PointerButton,
+        #[arg(long, value_enum)]
+        mode: ButtonMode,
+    },
+    #[cfg(target_os = "linux")]
+    ActDoubleClick {
+        #[arg(long)]
+        run: PathBuf,
+        #[arg(long)]
+        x: u32,
+        #[arg(long)]
+        y: u32,
+        #[arg(long, value_enum, default_value_t = PointerButton::Left)]
+        button: PointerButton,
+        #[arg(long, default_value_t = 100)]
+        interval_ms: u64,
+    },
+    #[cfg(target_os = "linux")]
+    ActDrag {
+        #[arg(long)]
+        run: PathBuf,
+        #[arg(long)]
+        from_x: u32,
+        #[arg(long)]
+        from_y: u32,
+        #[arg(long)]
+        to_x: u32,
+        #[arg(long)]
+        to_y: u32,
+        #[arg(long, value_enum, default_value_t = PointerButton::Left)]
+        button: PointerButton,
+        #[arg(long, default_value_t = 12)]
+        steps: u32,
+        #[arg(long, default_value_t = 500)]
+        duration_ms: u64,
+    },
+    #[cfg(target_os = "linux")]
+    ActScroll {
+        #[arg(long)]
+        run: PathBuf,
+        #[arg(long, allow_hyphen_values = true)]
+        delta_y: i32,
+    },
+    #[cfg(target_os = "linux")]
+    ActWait {
+        #[arg(long)]
+        run: PathBuf,
+        #[arg(long)]
+        duration_ms: u64,
     },
     #[cfg(target_os = "linux")]
     ActKey {
@@ -471,6 +537,29 @@ enum KeyMode {
     Press,
     Down,
     Up,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum PointerButton {
+    Left,
+    Middle,
+    Right,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ButtonMode {
+    Down,
+    Up,
+}
+
+impl From<PointerButton> for avm::display::MouseButton {
+    fn from(value: PointerButton) -> Self {
+        match value {
+            PointerButton::Left => Self::Left,
+            PointerButton::Middle => Self::Middle,
+            PointerButton::Right => Self::Right,
+        }
+    }
 }
 
 impl ApprovalPolicyArgument {
@@ -884,8 +973,36 @@ async fn main() -> Result<()> {
             run,
             x,
             y,
+            button,
             wait_after_ms,
-        } => act_click(&run, x, y, wait_after_ms).await?,
+        } => act_click(&run, x, y, button, wait_after_ms).await?,
+        #[cfg(target_os = "linux")]
+        Command::ActPointer { run, x, y } => act_pointer(&run, x, y).await?,
+        #[cfg(target_os = "linux")]
+        Command::ActButton { run, button, mode } => act_button(&run, button, mode).await?,
+        #[cfg(target_os = "linux")]
+        Command::ActDoubleClick {
+            run,
+            x,
+            y,
+            button,
+            interval_ms,
+        } => act_double_click(&run, x, y, button, interval_ms).await?,
+        #[cfg(target_os = "linux")]
+        Command::ActDrag {
+            run,
+            from_x,
+            from_y,
+            to_x,
+            to_y,
+            button,
+            steps,
+            duration_ms,
+        } => act_drag(&run, from_x, from_y, to_x, to_y, button, steps, duration_ms).await?,
+        #[cfg(target_os = "linux")]
+        Command::ActScroll { run, delta_y } => act_scroll(&run, delta_y).await?,
+        #[cfg(target_os = "linux")]
+        Command::ActWait { run, duration_ms } => act_wait(&run, duration_ms).await?,
         #[cfg(target_os = "linux")]
         Command::ActKey { run, keycode, mode } => act_key(&run, keycode, mode).await?,
         #[cfg(target_os = "linux")]
@@ -1915,23 +2032,171 @@ async fn smoke(run: &Path, url: &str, screenshot: &Path) -> Result<()> {
 }
 
 #[cfg(target_os = "linux")]
-async fn act_click(run: &Path, x: u32, y: u32, wait_after_ms: u64) -> Result<()> {
+async fn act_click(
+    run: &Path,
+    x: u32,
+    y: u32,
+    button: PointerButton,
+    wait_after_ms: u64,
+) -> Result<()> {
     let config = load_run(run)?;
     let computer = connect_input(&config).await?;
-    let moved = computer.move_pointer(x, y).await?;
-    let down = computer.mouse_down(avm::display::MouseButton::Left).await?;
-    let up = computer.mouse_up(avm::display::MouseButton::Left).await?;
+    let receipt = computer.click_at(x, y, button.into()).await?;
     tokio::time::sleep(Duration::from_millis(wait_after_ms)).await;
     println!(
         "{}",
         serde_json::to_string_pretty(&json!({
             "runId": config.id,
             "coordinates": {"x": x, "y": y},
-            "move": moved,
-            "pointerDown": down,
-            "pointerUp": up,
+            "button": format!("{button:?}").to_lowercase(),
+            "receipt": receipt,
             "waitAfterMs": wait_after_ms,
         }))?
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+async fn act_pointer(run: &Path, x: u32, y: u32) -> Result<()> {
+    let config = load_run(run)?;
+    let receipt = connect_input(&config).await?.move_pointer(x, y).await?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(
+            &json!({"runId": config.id, "coordinates": {"x": x, "y": y}, "receipt": receipt})
+        )?
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+async fn act_button(run: &Path, button: PointerButton, mode: ButtonMode) -> Result<()> {
+    let config = load_run(run)?;
+    let computer = connect_input(&config).await?;
+    let receipt = match mode {
+        ButtonMode::Down => computer.mouse_down(button.into()).await?,
+        ButtonMode::Up => computer.mouse_up(button.into()).await?,
+    };
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "runId": config.id,
+            "button": format!("{button:?}").to_lowercase(),
+            "mode": format!("{mode:?}").to_lowercase(),
+            "receipt": receipt,
+        }))?
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+async fn act_double_click(
+    run: &Path,
+    x: u32,
+    y: u32,
+    button: PointerButton,
+    interval_ms: u64,
+) -> Result<()> {
+    ensure!(
+        interval_ms <= 1_000,
+        "double-click interval must be at most 1000 ms"
+    );
+    let config = load_run(run)?;
+    let receipt = connect_input(&config)
+        .await?
+        .double_click_at(x, y, button.into(), Duration::from_millis(interval_ms))
+        .await?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "runId": config.id,
+            "coordinates": {"x": x, "y": y},
+            "button": format!("{button:?}").to_lowercase(),
+            "intervalMs": interval_ms,
+            "receipt": receipt,
+        }))?
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[allow(clippy::too_many_arguments)]
+async fn act_drag(
+    run: &Path,
+    from_x: u32,
+    from_y: u32,
+    to_x: u32,
+    to_y: u32,
+    button: PointerButton,
+    steps: u32,
+    duration_ms: u64,
+) -> Result<()> {
+    ensure!(steps >= 2, "drag needs at least two trajectory steps");
+    ensure!(
+        steps <= 1_000,
+        "drag supports at most 1000 trajectory steps"
+    );
+    ensure!(
+        duration_ms <= 60_000,
+        "drag duration must be at most 60000 ms"
+    );
+    let config = load_run(run)?;
+    let receipt = connect_input(&config)
+        .await?
+        .drag(
+            from_x,
+            from_y,
+            to_x,
+            to_y,
+            button.into(),
+            steps,
+            Duration::from_millis(duration_ms),
+        )
+        .await?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "runId": config.id,
+            "from": {"x": from_x, "y": from_y},
+            "to": {"x": to_x, "y": to_y},
+            "button": format!("{button:?}").to_lowercase(),
+            "steps": steps,
+            "durationMs": duration_ms,
+            "receipt": receipt,
+        }))?
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+async fn act_scroll(run: &Path, delta_y: i32) -> Result<()> {
+    let config = load_run(run)?;
+    let receipt = connect_input(&config).await?.scroll(delta_y).await?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(
+            &json!({"runId": config.id, "deltaY": delta_y, "receipt": receipt})
+        )?
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+async fn act_wait(run: &Path, duration_ms: u64) -> Result<()> {
+    ensure!(
+        duration_ms <= 60_000,
+        "wait duration must be at most 60000 ms"
+    );
+    let config = load_run(run)?;
+    let receipt = connect_input(&config)
+        .await?
+        .wait(Duration::from_millis(duration_ms))
+        .await?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(
+            &json!({"runId": config.id, "durationMs": duration_ms, "receipt": receipt})
+        )?
     );
     Ok(())
 }
@@ -1962,12 +2227,13 @@ async fn act_type(run: &Path, text: &str) -> Result<()> {
     ensure!(!text.is_empty(), "text must not be empty");
     let config = load_run(run)?;
     let computer = connect_input(&config).await?;
-    computer.type_text(text).await?;
+    let receipt = computer.type_text(text).await?;
     println!(
         "{}",
         serde_json::to_string_pretty(&json!({
             "runId": config.id,
             "characterCount": text.chars().count(),
+            "receipt": receipt,
         }))?
     );
     Ok(())

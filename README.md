@@ -64,6 +64,9 @@ target/release/avm history --run /var/lib/avm/runs/RUN_ID/run.json --source inpu
 target/release/avm frame --run /var/lib/avm/runs/RUN_ID/run.json --at-ns MONOTONIC_NS --output /tmp/frame.png
 target/release/avm replay --run /var/lib/avm/runs/RUN_ID/run.json --last-duration-ms 10000
 target/release/avm act-click --run /var/lib/avm/runs/RUN_ID/run.json --x 640 --y 360 --wait-after-ms 1000
+target/release/avm act-drag --run /var/lib/avm/runs/RUN_ID/run.json \
+  --from-x 400 --from-y 300 --to-x 700 --to-y 500 --steps 12 --duration-ms 500
+target/release/avm act-scroll --run /var/lib/avm/runs/RUN_ID/run.json --delta-y 3
 target/release/avm temporal-analyze \
   --run /var/lib/avm/runs/RUN_ID/run.json \
   --start-ns ACTION_START_NS --end-ns OBSERVATION_END_NS
@@ -79,6 +82,8 @@ target/release/avm performance-measure \
 target/release/avm performance-report \
   --run /var/lib/avm/runs/RUN_ID/run.json --last-duration-ms 30000
 ```
+
+The host action interface also includes `act-pointer`, `act-button`, `act-double-click`, `act-key`, `act-type`, and `act-wait`. Each command emits one receipt with the action ID and start/completion timestamps; the canonical input history retains that ID across all low-level events belonging to the action. The local MCP server exposes the same complete vocabulary through `avm_act`.
 
 `temporal-analyze` reconstructs consecutive same-sized full scanouts as well as rectangular display updates. It records its derived result back into the run timeline as `perception.temporal.analysis`. Small connected pixel changes near a recent pointer destination are retained as `display.cursor_only_change` evidence but cannot satisfy an application visual-response claim. Exact translated components are reported with source and destination bounds, displacement, and pixel match ratio.
 

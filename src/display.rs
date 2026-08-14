@@ -490,6 +490,150 @@ impl HostInput {
         self.complete_input("pointer.up", action_id, started_ns)
     }
 
+    pub async fn click_at(&self, x: u32, y: u32, button: MouseButton) -> Result<ActionReceipt> {
+        let action_id = Uuid::new_v4();
+        let started_ns = self.record_input("pointer.move", action_id, json!({"x": x, "y": y}))?;
+        if self.mouse.is_absolute().await? {
+            self.mouse.set_abs_position(x, y).await?;
+        } else {
+            bail!("relative pointer is unsupported until its current position is known");
+        }
+        self.record_input(
+            "pointer.down",
+            action_id,
+            json!({"button": format!("{button:?}")}),
+        )?;
+        self.mouse.press(button as u32).await?;
+        self.record_input(
+            "pointer.up",
+            action_id,
+            json!({"button": format!("{button:?}")}),
+        )?;
+        self.mouse.release(button as u32).await?;
+        self.complete_input("click", action_id, started_ns)
+    }
+
+    pub async fn double_click_at(
+        &self,
+        x: u32,
+        y: u32,
+        button: MouseButton,
+        interval: Duration,
+    ) -> Result<ActionReceipt> {
+        let action_id = Uuid::new_v4();
+        let started_ns = self.record_input("pointer.move", action_id, json!({"x": x, "y": y}))?;
+        if self.mouse.is_absolute().await? {
+            self.mouse.set_abs_position(x, y).await?;
+        } else {
+            bail!("relative pointer is unsupported until its current position is known");
+        }
+        for click_index in 0..2 {
+            self.record_input(
+                "pointer.down",
+                action_id,
+                json!({"button": format!("{button:?}"), "clickIndex": click_index}),
+            )?;
+            self.mouse.press(button as u32).await?;
+            self.record_input(
+                "pointer.up",
+                action_id,
+                json!({"button": format!("{button:?}"), "clickIndex": click_index}),
+            )?;
+            self.mouse.release(button as u32).await?;
+            if click_index == 0 {
+                tokio::time::sleep(interval).await;
+            }
+        }
+        self.complete_input("double_click", action_id, started_ns)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn drag(
+        &self,
+        from_x: u32,
+        from_y: u32,
+        to_x: u32,
+        to_y: u32,
+        button: MouseButton,
+        steps: u32,
+        duration: Duration,
+    ) -> Result<ActionReceipt> {
+        if steps < 2 {
+            bail!("drag needs at least two trajectory steps");
+        }
+        let action_id = Uuid::new_v4();
+        let started_ns = self.record_input(
+            "pointer.move",
+            action_id,
+            json!({"x": from_x, "y": from_y, "phase": "start"}),
+        )?;
+        if self.mouse.is_absolute().await? {
+            self.mouse.set_abs_position(from_x, from_y).await?;
+        } else {
+            bail!("relative pointer is unsupported until its current position is known");
+        }
+        self.record_input(
+            "pointer.down",
+            action_id,
+            json!({"button": format!("{button:?}")}),
+        )?;
+        self.mouse.press(button as u32).await?;
+        let step_delay = duration / steps;
+        for step in 1..=steps {
+            let x = from_x as i64 + (to_x as i64 - from_x as i64) * step as i64 / steps as i64;
+            let y = from_y as i64 + (to_y as i64 - from_y as i64) * step as i64 / steps as i64;
+            self.record_input(
+                "pointer.move",
+                action_id,
+                json!({"x": x, "y": y, "trajectoryStep": step, "trajectorySteps": steps}),
+            )?;
+            self.mouse.set_abs_position(x as u32, y as u32).await?;
+            tokio::time::sleep(step_delay).await;
+        }
+        self.record_input(
+            "pointer.up",
+            action_id,
+            json!({"button": format!("{button:?}")}),
+        )?;
+        self.mouse.release(button as u32).await?;
+        self.complete_input("drag", action_id, started_ns)
+    }
+
+    pub async fn scroll(&self, delta_y: i32) -> Result<ActionReceipt> {
+        if delta_y == 0 || delta_y.unsigned_abs() > 100 {
+            bail!("scroll delta_y must be between -100 and 100 and not zero");
+        }
+        let action_id = Uuid::new_v4();
+        let button = if delta_y < 0 {
+            MouseButton::WheelUp
+        } else {
+            MouseButton::WheelDown
+        };
+        let started_ns =
+            self.record_input("pointer.scroll", action_id, json!({"deltaY": delta_y}))?;
+        for step in 0..delta_y.unsigned_abs() {
+            self.record_input(
+                "pointer.wheel",
+                action_id,
+                json!({"button": format!("{button:?}"), "step": step + 1}),
+            )?;
+            self.mouse.press(button as u32).await?;
+            self.mouse.release(button as u32).await?;
+        }
+        self.complete_input("scroll", action_id, started_ns)
+    }
+
+    pub async fn wait(&self, duration: Duration) -> Result<ActionReceipt> {
+        let action_id = Uuid::new_v4();
+        let started_ns = self.record_input(
+            "input.wait",
+            action_id,
+            json!({"durationMs": duration.as_millis()}),
+        )?;
+        tokio::time::sleep(duration).await;
+        self.complete_input("wait", action_id, started_ns)
+    }
+
     pub async fn key_down(&self, keycode: u32) -> Result<ActionReceipt> {
         let action_id = Uuid::new_v4();
         let started_ns = self.record_input("key.down", action_id, json!({"keycode": keycode}))?;
@@ -507,12 +651,23 @@ impl HostInput {
     }
 
     pub async fn key_press(&self, keycode: u32) -> Result<ActionReceipt> {
-        let receipt = self.key_down(keycode).await?;
-        self.key_up(keycode).await?;
-        Ok(receipt)
+        let action_id = Uuid::new_v4();
+        let started_ns = self.record_input("key.down", action_id, json!({"keycode": keycode}))?;
+        self.keyboard.press(keycode).await?;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        self.record_input("key.up", action_id, json!({"keycode": keycode}))?;
+        self.keyboard.release(keycode).await?;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        self.complete_input("key.press", action_id, started_ns)
     }
 
-    pub async fn type_text(&self, text: &str) -> Result<()> {
+    pub async fn type_text(&self, text: &str) -> Result<ActionReceipt> {
+        let action_id = Uuid::new_v4();
+        let started_ns = self.record_input(
+            "text.type",
+            action_id,
+            json!({"characterCount": text.chars().count()}),
+        )?;
         for character in text.chars() {
             for transition in keystroke_sequence(character)
                 .with_context(|| format!("no US keyboard mapping for {character:?}"))?
@@ -521,8 +676,7 @@ impl HostInput {
                     KeyTransition::Down(keycode) => ("key.down", keycode),
                     KeyTransition::Up(keycode) => ("key.up", keycode),
                 };
-                let action_id = Uuid::new_v4();
-                let started_ns = self.record_input(
+                self.record_input(
                     kind,
                     action_id,
                     json!({"keycode": keycode, "character": character.to_string()}),
@@ -532,10 +686,9 @@ impl HostInput {
                     KeyTransition::Up(_) => self.keyboard.release(keycode).await?,
                 }
                 tokio::time::sleep(Duration::from_millis(150)).await;
-                self.complete_input(kind, action_id, started_ns)?;
             }
         }
-        Ok(())
+        self.complete_input("type_text", action_id, started_ns)
     }
 }
 

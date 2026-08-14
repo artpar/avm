@@ -7,6 +7,15 @@ import readline from 'node:readline';
 const config=JSON.parse(await readFile(process.argv[2],'utf8')); validateConfig(config);
 const tools=[
   tool('avm_capture','Capture the authoritative VM framebuffer and return it as an image.',{}),
+  tool('avm_act','Perform one recorded guest input action and return its action ID.',{
+    action:{type:'string',enum:['move_pointer','click','double_click','mouse_down','mouse_up','drag','scroll','key_down','key_up','key_press','type_text','wait']},
+    x:{type:'integer',minimum:0},y:{type:'integer',minimum:0},
+    fromX:{type:'integer',minimum:0},fromY:{type:'integer',minimum:0},toX:{type:'integer',minimum:0},toY:{type:'integer',minimum:0},
+    button:{type:'string',enum:['left','middle','right']},
+    keycode:{type:'integer',minimum:0,maximum:767},text:{type:'string',minLength:1,maxLength:4096},
+    deltaY:{type:'integer',minimum:-100,maximum:100},steps:{type:'integer',minimum:2,maximum:1000},
+    durationMs:{type:'integer',minimum:0,maximum:60000},intervalMs:{type:'integer',minimum:0,maximum:1000}
+  },['action']),
   tool('avm_click','Move the real guest pointer and click.',{x:{type:'integer',minimum:0},y:{type:'integer',minimum:0}},['x','y']),
   tool('avm_type','Type text through the real guest keyboard.',{text:{type:'string',maxLength:4096}},['text']),
   tool('avm_key','Send one Linux input keycode through QEMU.',{keycode:{type:'integer',minimum:0,maximum:767},mode:{type:'string',enum:['press','down','up']}},['keycode']),
@@ -26,6 +35,7 @@ function validateConfig(value){for(const key of ['project','zone','instance','re
 function shellQuote(value){return `'${String(value).replaceAll("'","'\\''")}'`}
 async function callTool(name,args){
   if(name==='avm_capture')return capture();
+  if(name==='avm_act')return text(await act(args));
   if(name==='avm_click')return text(await runAvm(['act-click','--run',config.remoteRun,'--x',integer(args.x),'--y',integer(args.y)]));
   if(name==='avm_type')return text(await runAvm(['act-type','--run',config.remoteRun,'--text',String(args.text)]));
   if(name==='avm_key')return text(await runAvm(['act-key','--run',config.remoteRun,'--keycode',integer(args.keycode),'--mode',args.mode||'press']));
@@ -36,7 +46,21 @@ async function callTool(name,args){
   if(name==='avm_publish'){if(!config.localAvm?.startsWith('/')||!config.remoteChannel?.startsWith('/'))throw new Error('publish channel is not configured');return text(await run(config.localAvm,['remote-publish','--channel',config.remoteChannel]))}
   throw new Error(`unknown AVM tool ${name}`)
 }
+async function act(args){
+  const action=String(args.action||'');const button=args.button||'left';
+  if(action==='move_pointer')return runAvm(['act-pointer','--run',config.remoteRun,'--x',requiredInteger(args,'x'),'--y',requiredInteger(args,'y')]);
+  if(action==='click')return runAvm(['act-click','--run',config.remoteRun,'--x',requiredInteger(args,'x'),'--y',requiredInteger(args,'y'),'--button',button,'--wait-after-ms',integer(args.durationMs??0)]);
+  if(action==='double_click')return runAvm(['act-double-click','--run',config.remoteRun,'--x',requiredInteger(args,'x'),'--y',requiredInteger(args,'y'),'--button',button,'--interval-ms',integer(args.intervalMs??100)]);
+  if(action==='mouse_down'||action==='mouse_up')return runAvm(['act-button','--run',config.remoteRun,'--button',button,'--mode',action==='mouse_down'?'down':'up']);
+  if(action==='drag')return runAvm(['act-drag','--run',config.remoteRun,'--from-x',requiredInteger(args,'fromX'),'--from-y',requiredInteger(args,'fromY'),'--to-x',requiredInteger(args,'toX'),'--to-y',requiredInteger(args,'toY'),'--button',button,'--steps',integer(args.steps??12),'--duration-ms',integer(args.durationMs??500)]);
+  if(action==='scroll')return runAvm(['act-scroll','--run',config.remoteRun,'--delta-y',requiredInteger(args,'deltaY')]);
+  if(action==='key_down'||action==='key_up'||action==='key_press')return runAvm(['act-key','--run',config.remoteRun,'--keycode',requiredInteger(args,'keycode'),'--mode',action.slice(4)]);
+  if(action==='type_text'){if(typeof args.text!=='string'||!args.text)throw new Error('type_text requires non-empty text');return runAvm(['act-type','--run',config.remoteRun,'--text',args.text])}
+  if(action==='wait')return runAvm(['act-wait','--run',config.remoteRun,'--duration-ms',integer(args.durationMs??1000)]);
+  throw new Error(`unsupported action ${action}`)
+}
 function integer(value){if(!Number.isSafeInteger(Number(value)))throw new Error('expected integer');return String(value)}
+function requiredInteger(args,name){if(args[name]===undefined)throw new Error(`${args.action} requires ${name}`);return integer(args[name])}
 function text(output){return{content:[{type:'text',text:output}]}}
 async function runAvm(args){const command=`cd ${shellQuote(dirname(config.remoteAvm))} && ${[config.remoteAvm,...args].map(shellQuote).join(' ')}`;return run('gcloud',['compute','ssh',config.instance,'--project',config.project,'--zone',config.zone,'--command',command])}
 async function capture(){const remote=`/tmp/avm-mcp-${process.pid}-${Date.now()}.png`;await runAvm(['capture','--run',config.remoteRun,'--output',remote]);const temporary=await mkdtemp(join(tmpdir(),'avm-mcp-'));const local=join(temporary,'frame.png');try{await run('gcloud',['compute','scp',`${config.instance}:${remote}`,local,'--project',config.project,'--zone',config.zone]);const data=await readFile(local);return{content:[{type:'image',data:data.toString('base64'),mimeType:'image/png'},{type:'text',text:'Authoritative QEMU framebuffer capture.'}]} }finally{await rm(temporary,{recursive:true,force:true})}}
