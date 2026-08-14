@@ -6,6 +6,7 @@ pub mod fingerprint;
 pub mod framebuffer;
 pub mod policy;
 pub mod qmp;
+pub mod query;
 pub mod remote;
 pub mod session;
 pub mod storage;

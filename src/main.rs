@@ -24,6 +24,7 @@ use avm::{
         EvidenceCommandOptions, EvidenceStore, PolicyConfig, PolicyPhase, PolicyState,
         acquire_browser_evidence, acquire_command_evidence,
     },
+    query::{ExperienceQuery, execute_query},
     remote::{
         RemoteChannelConfig, TeeEventSink, apply_transfer, prepare_transfer, serve_event_relay,
     },
@@ -138,6 +139,12 @@ enum Command {
         last_duration_ms: Option<u64>,
         #[arg(long)]
         config: Option<PathBuf>,
+    },
+    ExperienceQuery {
+        #[arg(long)]
+        run: PathBuf,
+        #[arg(long)]
+        input: PathBuf,
     },
     VlmObserve {
         #[arg(long)]
@@ -507,6 +514,7 @@ async fn main() -> Result<()> {
             last_duration_ms,
             config,
         } => temporal_analyze(&run, start_ns, end_ns, last_duration_ms, config.as_deref())?,
+        Command::ExperienceQuery { run, input } => experience_query(&run, &input)?,
         Command::VlmObserve {
             run,
             adapter_config,
@@ -1302,6 +1310,36 @@ fn temporal_analyze(
     event.provenance = Provenance::Derived;
     record_canonical(&config, event)?;
     println!("{}", serde_json::to_string_pretty(&analysis)?);
+    Ok(())
+}
+
+fn experience_query(run: &Path, input: &Path) -> Result<()> {
+    let config = load_run(run)?;
+    let store = experience(&config)?;
+    let query: ExperienceQuery = serde_json::from_slice(
+        &std::fs::read(input)
+            .with_context(|| format!("read experience query {}", input.display()))?,
+    )?;
+    let result = execute_query(&store, query)?;
+    let mut event = RawEvent::observed(
+        config.id,
+        "experience",
+        "experience.query.executed",
+        json!({
+            "query": result.query,
+            "relation": result.relation,
+            "interval": result.interval,
+            "observedEventCount": result.observed_events.len(),
+            "derivedEventCount": result.derived_events.len(),
+            "modelInterpretationCount": result.model_interpretations.len(),
+            "agentClaimCount": result.agent_claims.len(),
+            "frameCount": result.frames.len(),
+        }),
+    );
+    event.provenance = Provenance::Derived;
+    event.artifact_refs = result.artifact_refs.clone();
+    record_canonical(&config, event)?;
+    println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
 }
 
