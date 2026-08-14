@@ -364,6 +364,22 @@ enum Command {
         wait_after_ms: u64,
     },
     #[cfg(target_os = "linux")]
+    ActKey {
+        #[arg(long)]
+        run: PathBuf,
+        #[arg(long)]
+        keycode: u32,
+        #[arg(long, value_enum, default_value_t = KeyMode::Press)]
+        mode: KeyMode,
+    },
+    #[cfg(target_os = "linux")]
+    ActType {
+        #[arg(long)]
+        run: PathBuf,
+        #[arg(long)]
+        text: String,
+    },
+    #[cfg(target_os = "linux")]
     DragProof {
         #[arg(long)]
         run: PathBuf,
@@ -391,6 +407,13 @@ enum ApprovalPolicyArgument {
     Untrusted,
     OnRequest,
     Never,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum KeyMode {
+    Press,
+    Down,
+    Up,
 }
 
 impl ApprovalPolicyArgument {
@@ -784,6 +807,10 @@ async fn main() -> Result<()> {
             y,
             wait_after_ms,
         } => act_click(&run, x, y, wait_after_ms).await?,
+        #[cfg(target_os = "linux")]
+        Command::ActKey { run, keycode, mode } => act_key(&run, keycode, mode).await?,
+        #[cfg(target_os = "linux")]
+        Command::ActType { run, text } => act_type(&run, &text).await?,
         #[cfg(target_os = "linux")]
         Command::DragProof {
             run,
@@ -1595,6 +1622,59 @@ async fn act_click(run: &Path, x: u32, y: u32, wait_after_ms: u64) -> Result<()>
             "pointerDown": down,
             "pointerUp": up,
             "waitAfterMs": wait_after_ms,
+        }))?
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+async fn act_key(run: &Path, keycode: u32, mode: KeyMode) -> Result<()> {
+    let config = load_run(run)?;
+    let computer = connect_computer(&config).await?;
+    computer
+        .wait_for_stable_frame_size(
+            Duration::from_secs(60),
+            Duration::from_millis(250),
+            config.width,
+            config.height,
+        )
+        .await?;
+    let receipt = match mode {
+        KeyMode::Press => computer.key_press(keycode).await?,
+        KeyMode::Down => computer.key_down(keycode).await?,
+        KeyMode::Up => computer.key_up(keycode).await?,
+    };
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "runId": config.id,
+            "keycode": keycode,
+            "mode": format!("{mode:?}").to_lowercase(),
+            "receipt": receipt,
+        }))?
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+async fn act_type(run: &Path, text: &str) -> Result<()> {
+    ensure!(!text.is_empty(), "text must not be empty");
+    let config = load_run(run)?;
+    let computer = connect_computer(&config).await?;
+    computer
+        .wait_for_stable_frame_size(
+            Duration::from_secs(60),
+            Duration::from_millis(250),
+            config.width,
+            config.height,
+        )
+        .await?;
+    computer.type_text(text).await?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "runId": config.id,
+            "characterCount": text.chars().count(),
         }))?
     );
     Ok(())
