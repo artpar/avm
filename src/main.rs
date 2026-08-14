@@ -326,6 +326,17 @@ enum Command {
         screenshot: PathBuf,
     },
     #[cfg(target_os = "linux")]
+    ActClick {
+        #[arg(long)]
+        run: PathBuf,
+        #[arg(long)]
+        x: u32,
+        #[arg(long)]
+        y: u32,
+        #[arg(long, default_value_t = 1_000)]
+        wait_after_ms: u64,
+    },
+    #[cfg(target_os = "linux")]
     DragProof {
         #[arg(long)]
         run: PathBuf,
@@ -722,6 +733,13 @@ async fn main() -> Result<()> {
             url,
             screenshot,
         } => smoke(&run, &url, &screenshot).await?,
+        #[cfg(target_os = "linux")]
+        Command::ActClick {
+            run,
+            x,
+            y,
+            wait_after_ms,
+        } => act_click(&run, x, y, wait_after_ms).await?,
         #[cfg(target_os = "linux")]
         Command::DragProof {
             run,
@@ -1405,6 +1423,36 @@ async fn smoke(run: &Path, url: &str, screenshot: &Path) -> Result<()> {
             "accepted": true, "inputActionId": enter.action_id, "postInputDisplayUpdate": true,
             "screenshot": screenshot, "frameSha256": hash
         })
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+async fn act_click(run: &Path, x: u32, y: u32, wait_after_ms: u64) -> Result<()> {
+    let config = load_run(run)?;
+    let computer = connect_computer(&config).await?;
+    computer
+        .wait_for_stable_frame_size(
+            Duration::from_secs(60),
+            Duration::from_millis(250),
+            config.width,
+            config.height,
+        )
+        .await?;
+    let moved = computer.move_pointer(x, y).await?;
+    let down = computer.mouse_down(avm::display::MouseButton::Left).await?;
+    let up = computer.mouse_up(avm::display::MouseButton::Left).await?;
+    tokio::time::sleep(Duration::from_millis(wait_after_ms)).await;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "runId": config.id,
+            "coordinates": {"x": x, "y": y},
+            "move": moved,
+            "pointerDown": down,
+            "pointerUp": up,
+            "waitAfterMs": wait_after_ms,
+        }))?
     );
     Ok(())
 }
