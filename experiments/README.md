@@ -28,3 +28,8 @@ with externally recorded duration, tool/model use when available, and product
 interactions; `node experiments/real-evaluator-check.mjs` verifies that merge.
 The deployment config and real manifest are environment-specific evidence and
 must stay outside the candidate repository.
+
+Run `node experiments/analyze.mjs PATH/TO/results.jsonl` to validate a completed
+balanced run and calculate per-condition means, rich-perception and
+evidence-gating main effects, and the factorial interaction. Null measurements
+remain unavailable rather than being coerced to zero.
