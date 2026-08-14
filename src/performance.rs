@@ -241,7 +241,7 @@ impl ProcessSnapshot {
     pub fn capture(pid: u32) -> Result<Self> {
         let process = std::path::PathBuf::from(format!("/proc/{pid}"));
         let (ticks, rss_pages) = stat_values(&std::fs::read_to_string(process.join("stat"))?)?;
-        let mut vcpu_ticks = 0;
+        let mut vcpu_ticks = 0_u64;
         for entry in std::fs::read_dir(process.join("task"))? {
             let task = entry?.path();
             let name = std::fs::read_to_string(task.join("comm")).unwrap_or_default();
