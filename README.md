@@ -82,6 +82,25 @@ target/release/avm vlm-observe \
 
 The adapter is started directly without a shell. It receives one JSON request on stdin containing the constrained prompt plus three PNG artifact paths and hashes, and must return `{"output": ...}` on stdout. AVM invokes it only for eligible temporal observations such as delayed response, repeated updates, state reversion, or pixel translation. The resulting `perception.vlm.observation` event records the model and version, prompt, output, trigger, timestamp, and portable input artifact hashes with `model_interpreted` provenance. It neither alters nor replaces the underlying `derived` temporal event.
 
+Use `experience-query` for cross-source questions. Queries are JSON so the anchor and temporal assumptions remain explicit:
+
+```json
+{
+  "kind": "aroundEvent",
+  "eventId": "00000000-0000-0000-0000-000000000000",
+  "beforeMs": 500,
+  "afterMs": 2000
+}
+```
+
+```sh
+target/release/avm experience-query \
+  --run /var/lib/avm/runs/RUN_ID/run.json \
+  --input query.json
+```
+
+Supported query kinds are `aroundEvent`, `networkFrames`, `visibleWhilePointerDown`, `browserElementUnderPointer`, `evidenceSinceFingerprint`, `beforeConsoleException`, `lastDialog`, and `richerVisualEvidence`. Results put directly observed events first, followed by deterministic derivations, model interpretations, and agent claims in separate fields. Relevant temporal and VLM results are joined by the interval in their payload even when analysis completed later. Frame lists are content-addressed and collapse adjacent identical framebuffer states. Browser hit-testing uses a pixel-verified viewport correlation, CDP layout bounds and paint order, and the accessibility tree; it reports the correlated snapshot distance rather than claiming a live DOM hit-test. Network request/response association currently uses URL plus order and states that limitation because the browser sensor does not yet emit a transport request ID.
+
 Create an externally owned session and run Codex under its supervisor store:
 
 ```sh
@@ -139,4 +158,4 @@ Contradictory evidence moves policy to `EVIDENCE_FAILED`. Further declarations a
 
 ## Current boundary
 
-This is not the completed research system. Milestones one through six have passed their current acceptance gates on a real GCE Linux/KVM host: VM lifecycle/reset, persistent experience, local Codex App Server supervision over a remote channel, authoritative browser observation/failure diagnosis, evaluator-owned policy plus evidence enforcement, and temporal perception. The temporal gate used a deterministic guest fixture to prove cursor movement without application response, delayed response, repeated region changes with A-B-A reversions, and an exact 160-pixel translation. A provider-neutral, event-triggered VLM adapter is implemented and verified with reconstructable frame provenance; a live provider call is deployment configuration rather than a fixed dependency. Broader experience queries, guest AT-SPI, runtime/audio sources, the evaluator application, and the controlled experiment remain later milestones.
+This is not the completed research system. Milestones one through seven have passed their current acceptance gates on a real GCE Linux/KVM host: VM lifecycle/reset, persistent experience, local Codex App Server supervision over a remote channel, authoritative browser observation/failure diagnosis, evaluator-owned policy plus evidence enforcement, temporal perception, and a queryable cross-source experience. The temporal gate used a deterministic guest fixture to prove cursor movement without application response, delayed response, repeated region changes with A-B-A reversions, and an exact 160-pixel translation. A provider-neutral, event-triggered VLM adapter is implemented and verified with reconstructable frame provenance; a live provider call is deployment configuration rather than a fixed dependency. Guest AT-SPI, runtime/audio sources, the evaluator application, performance characterization, and the controlled experiment remain later milestones.
