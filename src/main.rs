@@ -30,6 +30,7 @@ use avm::{
     session::ExperimentSession,
     temporal::{TemporalConfig, analyze_temporal},
     timeline::{ExperienceEventSink, TimelineStore},
+    vlm::{CommandVlmAdapter, CommandVlmConfig, DEFAULT_VLM_PROMPT, observe_temporal_event},
     vm::{RunConfig, VmController},
 };
 use clap::{Parser, Subcommand, ValueEnum};
@@ -137,6 +138,18 @@ enum Command {
         last_duration_ms: Option<u64>,
         #[arg(long)]
         config: Option<PathBuf>,
+    },
+    VlmObserve {
+        #[arg(long)]
+        run: PathBuf,
+        #[arg(long)]
+        adapter_config: PathBuf,
+        #[arg(long)]
+        temporal_event_id: Option<uuid::Uuid>,
+        #[arg(long)]
+        observation_index: Option<usize>,
+        #[arg(long)]
+        prompt: Option<String>,
     },
     BrowserObserve {
         #[arg(long)]
@@ -494,6 +507,19 @@ async fn main() -> Result<()> {
             last_duration_ms,
             config,
         } => temporal_analyze(&run, start_ns, end_ns, last_duration_ms, config.as_deref())?,
+        Command::VlmObserve {
+            run,
+            adapter_config,
+            temporal_event_id,
+            observation_index,
+            prompt,
+        } => vlm_observe(
+            &run,
+            &adapter_config,
+            temporal_event_id,
+            observation_index,
+            prompt.as_deref().unwrap_or(DEFAULT_VLM_PROMPT),
+        )?,
         Command::BrowserObserve {
             run,
             endpoint,
@@ -1276,6 +1302,52 @@ fn temporal_analyze(
     event.provenance = Provenance::Derived;
     record_canonical(&config, event)?;
     println!("{}", serde_json::to_string_pretty(&analysis)?);
+    Ok(())
+}
+
+fn vlm_observe(
+    run: &Path,
+    adapter_config_path: &Path,
+    temporal_event_id: Option<uuid::Uuid>,
+    observation_index: Option<usize>,
+    prompt: &str,
+) -> Result<()> {
+    let config = load_run(run)?;
+    let store = experience(&config)?;
+    let temporal_event = match temporal_event_id {
+        Some(event_id) => store
+            .event(event_id)?
+            .with_context(|| format!("temporal event {event_id} is not in the timeline"))?,
+        None => store
+            .history(None, None, &["perception".to_owned()])?
+            .into_iter()
+            .rev()
+            .find(|event| event.kind == "perception.temporal.analysis")
+            .context("timeline contains no temporal analysis event")?,
+    };
+    ensure!(
+        temporal_event.session_id == config.id,
+        "temporal event belongs to another run"
+    );
+    let adapter_config: CommandVlmConfig =
+        serde_json::from_slice(&std::fs::read(adapter_config_path).with_context(|| {
+            format!(
+                "read VLM adapter configuration {}",
+                adapter_config_path.display()
+            )
+        })?)?;
+    let adapter = CommandVlmAdapter::new(adapter_config)?;
+    let artifacts = ArtifactStore::new(config.paths().artifacts)?;
+    let (event, observation) = observe_temporal_event(
+        &store,
+        &artifacts,
+        &temporal_event,
+        observation_index,
+        prompt,
+        &adapter,
+    )?;
+    record_canonical(&config, event)?;
+    println!("{}", serde_json::to_string_pretty(&observation)?);
     Ok(())
 }
 

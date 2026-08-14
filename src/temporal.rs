@@ -83,7 +83,7 @@ impl TemporalConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PixelBounds {
     pub x: u32,
@@ -92,7 +92,7 @@ pub struct PixelBounds {
     pub height: u32,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DisplayChangeFact {
     pub event_id: Uuid,
@@ -111,7 +111,7 @@ pub struct DisplayChangeFact {
     pub cursor_only_candidate: bool,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TemporalObservation {
     pub kind: String,
@@ -121,7 +121,7 @@ pub struct TemporalObservation {
     pub payload: Value,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TemporalAnalysis {
     pub start_ns: u64,

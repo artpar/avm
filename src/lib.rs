@@ -11,6 +11,7 @@ pub mod session;
 pub mod storage;
 pub mod temporal;
 pub mod timeline;
+pub mod vlm;
 pub mod vm;
 pub mod workspace_gate;
 
