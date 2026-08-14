@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Project Board</title><link rel="stylesheet" href="styles.css"></head>
+<body>
+  <header><div><p class="eyebrow">Workbench</p><h1>Project board</h1></div><div class="toolbar"><label>Search <input id="search" type="search" placeholder="Filter cards…"></label><button id="undo" title="Undo (Ctrl+Z)">Undo</button><button id="new-card" class="primary">New card</button></div></header>
+  <nav id="projects" aria-label="Projects"></nav>
+  <main><div id="status" role="status">Loading board…</div><section id="board" aria-label="Issue board"></section></main>
+  <dialog id="editor"><form method="dialog"><div class="dialog-head"><h2 id="dialog-title">Edit card</h2><button value="cancel" aria-label="Close">×</button></div><input id="card-id" type="hidden"><label>Title<input id="card-title" required maxlength="100"></label><label>Description<textarea id="card-description" rows="5"></textarea></label><label>Priority<select id="card-priority"><option>low</option><option selected>medium</option><option>high</option></select></label><p id="dialog-error" class="error" role="alert"></p><div class="dialog-actions"><button value="cancel">Cancel</button><button id="save-card" value="default" class="primary">Save</button></div></form></dialog>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="app.js"></script>
+</body></html>

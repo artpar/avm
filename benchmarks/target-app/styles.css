@@ -1,0 +1,22 @@
+:root { font-family: Inter, system-ui, sans-serif; color: #18212f; background: #f4f6f8; }
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 760px; }
+header { display:flex; align-items:end; justify-content:space-between; padding:24px 32px 18px; background:#fff; border-bottom:1px solid #dce2e8; }
+h1,h2,p { margin:0; } h1 { font-size:28px; } .eyebrow { color:#58677a; font-size:12px; font-weight:700; letter-spacing:.12em; text-transform:uppercase; }
+.toolbar { display:flex; gap:10px; align-items:end; } label { display:grid; gap:6px; font-size:13px; font-weight:650; }
+input,textarea,select,button { font:inherit; border:1px solid #b8c2ce; border-radius:8px; padding:9px 11px; background:#fff; } button { cursor:pointer; } button:hover { border-color:#58677a; }
+.primary { background:#1f5eff; color:white; border-color:#1f5eff; }
+nav { display:flex; gap:4px; padding:12px 32px 0; } nav button[aria-selected="true"] { background:#18212f; color:white; }
+main { padding:18px 32px 32px; } #status { color:#58677a; min-height:24px; }
+#board { display:grid; grid-template-columns:repeat(3,minmax(220px,1fr)); gap:16px; }
+.column { background:#e9edf2; border:1px solid #d7dde5; border-radius:12px; min-height:420px; padding:12px; }
+.column h2 { display:flex; justify-content:space-between; font-size:15px; margin:3px 3px 12px; } .count { color:#69788a; }
+.card-list { min-height:350px; display:grid; align-content:start; gap:10px; }
+.card { background:#fff; border:1px solid #d5dce5; border-radius:10px; padding:13px; box-shadow:0 1px 2px #18212f12; cursor:grab; }
+.card.pending { opacity:.55; } .card h3 { margin:0 0 7px; font-size:15px; } .card p { color:#5b6878; font-size:13px; line-height:1.4; }
+.priority { display:inline-block; margin-top:10px; font-size:11px; font-weight:750; text-transform:uppercase; color:#6a3d00; }
+.card-list.over { outline:2px solid #1f5eff; outline-offset:3px; }
+dialog { border:0; border-radius:14px; padding:0; width:min(520px,80vw); box-shadow:0 24px 70px #0d172744; } dialog::backdrop { background:#10182788; }
+dialog form { padding:22px; display:grid; gap:16px; } .dialog-head,.dialog-actions { display:flex; justify-content:space-between; align-items:center; } .dialog-head button { border:0; font-size:24px; padding:2px 8px; }.dialog-actions { justify-content:flex-end; gap:10px; }
+.error { color:#a32626; min-height:18px; font-size:13px; } #toast { position:fixed; right:24px; bottom:24px; background:#18212f; color:#fff; border-radius:9px; padding:11px 14px; opacity:0; transition:opacity .15s; } #toast.show { opacity:1; }
+@media (max-width:900px) { header { align-items:start; gap:18px; } .toolbar { flex-wrap:wrap; justify-content:flex-end; } }

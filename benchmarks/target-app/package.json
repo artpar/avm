@@ -1,0 +1,10 @@
+{
+  "name": "avm-project-board",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "check": "node check.mjs"
+  },
+  "engines": { "node": ">=18" }
+}
