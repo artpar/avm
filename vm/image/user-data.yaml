@@ -32,6 +32,7 @@ packages:
   - python3-pip
   - python3-pyatspi
   - weston
+  - xfce4-terminal
   - xwayland
 
 write_files:
@@ -123,12 +124,19 @@ write_files:
     permissions: '0755'
     content: |
       #!/bin/sh
+      marker=/run/user/1000/avm-accessibility-bus-ready
+      rm -f "$marker"
       (
         while true; do
           /usr/local/bin/avm-accessibility-sensor
           sleep 1
         done
       ) &
+      attempts=0
+      while [ ! -f "$marker" ] && [ "$attempts" -lt 100 ]; do
+        attempts=$((attempts + 1))
+        sleep 0.1
+      done
       exec /usr/local/bin/avm-browser
 
 runcmd:

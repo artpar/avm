@@ -6,6 +6,7 @@ import time
 import pyatspi
 
 DEVICE = "/dev/virtio-ports/org.avm.accessibility"
+BUS_READY_MARKER = "/run/user/1000/avm-accessibility-bus-ready"
 MAX_TREE_NODES = 500
 MAX_TREE_DEPTH = 10
 MAX_TEXT_CHARACTERS = 4096
@@ -208,8 +209,10 @@ def on_event(event):
 
 def main():
     global output
-    output = open(DEVICE, "w", buffering=1, encoding="utf-8")
     desktop = pyatspi.Registry.getDesktop(0)
+    with open(BUS_READY_MARKER, "w", encoding="utf-8") as marker:
+        marker.write("ready\n")
+    output = open(DEVICE, "w", buffering=1, encoding="utf-8")
     emit(
         "accessibility.sensor.ready",
         {
