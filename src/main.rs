@@ -12,7 +12,7 @@ use avm::audio::{
     DEFAULT_AUDIO_EVENT_PROMPT, DEFAULT_TRANSCRIPTION_PROMPT, interpret_audio_event,
 };
 #[cfg(target_os = "linux")]
-use avm::performance::{ProcessSnapshot, ResourceMeasurement, build_report, tree_usage};
+use avm::performance::{ProcessSnapshot, ResourceMeasurement};
 #[cfg(target_os = "linux")]
 use avm::qmp::QmpClient;
 
@@ -30,6 +30,7 @@ use avm::{
     },
     event::{EventSink, Provenance, RawEvent, monotonic_ns},
     experience::ExperienceStore,
+    performance::{build_report, tree_usage},
     policy::{
         BrowserEvidenceOptions, DevelopmentDeclarationInput, DiagnosisPlanInput,
         EvidenceCommandOptions, EvidenceStore, PolicyConfig, PolicyPhase, PolicyState,
@@ -181,6 +182,16 @@ enum Command {
         run: PathBuf,
         #[arg(long)]
         input: PathBuf,
+    },
+    PerformanceReport {
+        #[arg(long)]
+        run: PathBuf,
+        #[arg(long)]
+        start_ns: Option<u64>,
+        #[arg(long)]
+        end_ns: Option<u64>,
+        #[arg(long)]
+        last_duration_ms: Option<u64>,
     },
     BrowserObserve {
         #[arg(long)]
@@ -604,6 +615,12 @@ async fn main() -> Result<()> {
             accessibility_observe(&run, duration_ms)?
         }
         Command::RuntimeImport { run, input } => runtime_import(&run, &input)?,
+        Command::PerformanceReport {
+            run,
+            start_ns,
+            end_ns,
+            last_duration_ms,
+        } => performance_report(&run, start_ns, end_ns, last_duration_ms)?,
         Command::BrowserObserve {
             run,
             endpoint,
@@ -1521,6 +1538,29 @@ fn runtime_import(run: &Path, input: &Path) -> Result<()> {
         sink.record(event)?;
     }
     println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
+fn performance_report(
+    run: &Path,
+    start_ns: Option<u64>,
+    end_ns: Option<u64>,
+    last_duration_ms: Option<u64>,
+) -> Result<()> {
+    let config = load_run(run)?;
+    let store = experience(&config)?;
+    let (start_ns, end_ns) = resolve_interval(&store, start_ns, end_ns, last_duration_ms)?;
+    let events = store.history(Some(start_ns), Some(end_ns), &[])?;
+    let report = build_report(&events, &config.paths().artifacts, start_ns, end_ns, None)?;
+    let mut event = RawEvent::observed(
+        config.id,
+        "performance",
+        "performance.report",
+        serde_json::to_value(&report)?,
+    );
+    event.provenance = Provenance::Derived;
+    record_canonical(&config, event)?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }
 
