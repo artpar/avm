@@ -7,7 +7,7 @@ const conditions = Object.fromEntries(['A', 'B', 'C', 'D'].map(condition => [con
 if (rows.length < 8 || Object.values(conditions).some(group => group.length < 2)) throw new Error('results must contain at least two trials for each condition');
 if (rows.some(row => row.agent.exitCode !== 0 || row.agent.timedOut || row.evaluator.exitCode !== 0 || row.evaluator.timedOut)) throw new Error('results contain a failed or timed-out trial');
 
-const metrics = ['functionalDefects', 'hiddenDefectsDiscovered', 'userFacingDefects', 'temporalDefects', 'incorrectRequirementInterpretations', 'regressions', 'timeMs', 'toolCalls', 'modelTokens', 'productInteractions', 'diagnosisAccuracy', 'humanInterventions', 'catastrophicImplementations'];
+const metrics = ['functionalDefects', 'hiddenDefectsDiscovered', 'userFacingDefects', 'temporalDefects', 'incorrectRequirementInterpretations', 'regressions', 'rework', 'failedAttempts', 'timeMs', 'toolCalls', 'modelTokens', 'productInteractions', 'diagnosisAccuracy', 'humanInterventions', 'catastrophicImplementations'];
 const summarize = group => Object.fromEntries(metrics.map(metric => {
   const values = group.map(row => row.metrics[metric]).filter(Number.isFinite);
   return [metric, { mean: values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null, available: values.length }];
