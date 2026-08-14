@@ -2,6 +2,7 @@ import { readFile, writeFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { spawn } from 'node:child_process';
+import crypto from 'node:crypto';
 import readline from 'node:readline';
 
 const config=JSON.parse(await readFile(process.argv[2],'utf8')); validateConfig(config);
@@ -30,11 +31,14 @@ const tools=[
   tool('avm_history','Read recorded cross-source history.',{lastDurationMs:{type:'integer',minimum:1},source:{type:'array',items:{type:'string'}}}),
   tool('avm_query','Query recorded experience. Kinds: aroundEvent, networkFrames, visibleWhilePointerDown, browserElementUnderPointer, evidenceSinceFingerprint, beforeConsoleException, lastDialog, richerVisualEvidence, runtimeTrace.',{query:{type:'object',properties:{kind:{type:'string',enum:['aroundEvent','networkFrames','visibleWhilePointerDown','browserElementUnderPointer','evidenceSinceFingerprint','beforeConsoleException','lastDialog','richerVisualEvidence','runtimeTrace']}},required:['kind'],additionalProperties:true}},['query']),
   tool('avm_accessibility','Observe a fresh native accessibility tree and events.',{durationMs:{type:'integer',minimum:1,maximum:60000}}),
-  tool('avm_browser_observe','Record a CDP browser snapshot, network, console, performance, screenshot, and trace.',{durationMs:{type:'integer',minimum:1,maximum:60000}})
+  tool('avm_browser_observe','Record CDP browser, network, console, performance, screenshot, and trace evidence. Use start before guest actions and finish afterward to correlate them.',{
+    mode:{type:'string',enum:['once','start','finish']},durationMs:{type:'integer',minimum:1,maximum:60000},observationId:{type:'string'}
+  })
 ];
 if(config.localAvm&&config.remoteChannel)tools.push(tool('avm_publish','Publish the current fingerprinted local candidate through the fixed AVM remote channel.',{}));
 
 const lines=readline.createInterface({input:process.stdin,crlfDelay:Infinity});
+const browserObservations=new Map();
 for await(const line of lines){if(!line.trim())continue;let request;try{request=JSON.parse(line)}catch{continue}if(request.id===undefined)continue;try{let result;if(request.method==='initialize')result={protocolVersion:request.params?.protocolVersion||'2025-06-18',capabilities:{tools:{listChanged:false}},serverInfo:{name:'avm-workstation',version:'1'}};else if(request.method==='tools/list')result={tools};else if(request.method==='tools/call')result=await callTool(request.params?.name,request.params?.arguments||{});else throw new Error(`unsupported method ${request.method}`);send({jsonrpc:'2.0',id:request.id,result})}catch(error){send({jsonrpc:'2.0',id:request.id,result:{content:[{type:'text',text:error.message}],isError:true}})}}
 
 function tool(name,description,properties,required=[]){return{name,description,inputSchema:{type:'object',properties,required,additionalProperties:false}}}
@@ -51,10 +55,31 @@ async function callTool(name,args){
   if(name==='avm_history'){const command=['history','--run',config.remoteRun,'--last-duration-ms',integer(args.lastDurationMs||10000)];for(const source of args.source||[])command.push('--source',String(source));return text(await runAvm(command))}
   if(name==='avm_query')return text(await query(args.query));
   if(name==='avm_accessibility')return text(await runAvm(['accessibility-observe','--run',config.remoteRun,'--duration-ms',integer(args.durationMs||5000)]));
-  if(name==='avm_browser_observe')return text(await runAvm(['browser-observe','--run',config.remoteRun,'--endpoint',config.browserEndpoint||'http://127.0.0.1:9222','--script',config.remoteBrowserScript||'/home/artpar/avm/supervisor/browser/observer.mjs','--duration-ms',integer(args.durationMs||5000)]));
+  if(name==='avm_browser_observe')return browserObserve(args);
   if(name==='avm_publish'){if(!config.localAvm?.startsWith('/')||!config.remoteChannel?.startsWith('/'))throw new Error('publish channel is not configured');return text(await run(config.localAvm,['remote-publish','--channel',config.remoteChannel]))}
   throw new Error(`unknown AVM tool ${name}`)
 }
+async function browserObserve(args){
+  const mode=args.mode||'once';
+  if(mode==='once')return text(await runAvm(browserObserveArgs(args.durationMs||5000)));
+  if(mode==='start'){
+    const observationId=crypto.randomUUID();
+    const result=runAvm(browserObserveArgs(args.durationMs||30000)).then(output=>({output}),error=>({error}));
+    browserObservations.set(observationId,result);
+    return text(JSON.stringify({observationId,status:'recording'}));
+  }
+  if(mode==='finish'){
+    if(typeof args.observationId!=='string'||!args.observationId)throw new Error('finish requires observationId');
+    const pending=browserObservations.get(args.observationId);
+    if(!pending)throw new Error(`unknown browser observation ${args.observationId}`);
+    browserObservations.delete(args.observationId);
+    const result=await pending;
+    if(result.error)throw result.error;
+    return text(result.output);
+  }
+  throw new Error(`unsupported browser observation mode ${mode}`);
+}
+function browserObserveArgs(durationMs){return['browser-observe','--run',config.remoteRun,'--endpoint',config.browserEndpoint||'http://127.0.0.1:9222','--script',config.remoteBrowserScript||'/home/artpar/avm/supervisor/browser/observer.mjs','--duration-ms',integer(durationMs)]}
 async function act(args){
   const action=String(args.action||'');const button=args.button||'left';
   if(action==='move_pointer')return runAvm(['act-pointer','--run',config.remoteRun,'--x',requiredInteger(args,'x'),'--y',requiredInteger(args,'y')]);

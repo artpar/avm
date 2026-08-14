@@ -6,10 +6,10 @@ import { spawn } from 'node:child_process';
 const root = await mkdtemp(join(tmpdir(), 'avm-final-demo-audit-'));
 try {
   const tools = [
-    ['avm_browser_observe', {}], ['avm_capture', {}], ['avm_act', { action: 'click' }],
+    ['avm_browser_observe', { mode: 'start' }], ['avm_capture', {}], ['avm_act', { action: 'click' }], ['avm_browser_observe', { mode: 'finish', observationId: 'before' }],
     ['avm_history', {}], ['avm_query', { query: { kind: 'aroundEvent', eventId: 'event-1' } }],
     ['avm_experience', { operation: 'replay' }], ['avm_publish', {}],
-    ['avm_act', { action: 'click' }], ['avm_capture', {}], ['avm_browser_observe', {}],
+    ['avm_browser_observe', { mode: 'start' }], ['avm_act', { action: 'click' }], ['avm_capture', {}], ['avm_browser_observe', { mode: 'finish', observationId: 'after' }],
   ];
   const events = tools.flatMap(([tool, argumentsValue], index) => [
     { type: 'item.started', item: { id: `item-${index}`, type: 'mcp_tool_call', tool, arguments: argumentsValue } },
