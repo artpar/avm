@@ -120,38 +120,68 @@ function usageTokens(value) {
 }
 
 async function prepareRemote() {
-  must(await run(config.gcloud, ['compute', 'instances', 'start', config.instance, '--project', config.project, '--zone', config.zone, '--quiet'], workspace, config.vmWallTimeMs));
-  const label = trialRoot.split('/').at(-1);
-  if (!/^[a-zA-Z0-9._-]+$/.test(label)) throw new Error('unsafe trial label');
-  const remoteCandidate = `${config.remoteCandidateRoot}/${label}`;
-  const remoteStateRoot = `${config.remoteStateRoot}/${label}`;
-  await gcloudSsh(`mkdir -p ${quote(remoteCandidate)} ${quote(remoteStateRoot)}`);
-  const runPath = output(await gcloudAvm(['create-run', '--base-image', config.baseImage, '--candidate', remoteCandidate, '--state-root', remoteStateRoot]));
-  const localSupervisor = join(trialRoot, 'remote-channel');
-  const channel = output(await run(config.localAvm, ['remote-channel-create', '--local-candidate', workspace, '--state-root', localSupervisor, '--project', config.project, '--zone', config.zone, '--instance', config.instance, '--remote-run', runPath, '--remote-avm', config.remoteAvm], workspace));
-  must(await run(config.localAvm, ['remote-publish', '--channel', channel], workspace, config.vmWallTimeMs));
-  await gcloudAvm(['start', '--run', runPath]);
-  await waitForGuest();
-  const guestLog = `/tmp/avm-target-${label}.log`;
-  const guestState = `/tmp/avm-board-${label}.json`;
-  await gcloudSsh(`${guestSsh()} ${quote(`cd /workspace && HOST=127.0.0.1 PORT=3000 BOARD_STATE=${guestState} BOARD_LATENCY_MS=120 nohup node --watch server.mjs >${guestLog} 2>&1 &`)} `);
-  const tunnelPid = output(await gcloudSsh(`${guestSsh('-N -L 127.0.0.1:13000:127.0.0.1:3000')} >/tmp/avm-tunnel-${label}.log 2>&1 & echo $!`));
-  const proxyPid = output(await gcloudSsh(`cd ${quote(dirname(config.remoteFaultProxy))} && EVALUATOR_PORT=3001 TARGET_ORIGIN=http://127.0.0.1:13000 FAULT_PROFILE=${quote(config.remoteFaultProfile)} nohup node ${quote(config.remoteFaultProxy)} >/tmp/avm-proxy-${label}.log 2>&1 & echo $!`));
-  await gcloudAvm(['act-type', '--run', runPath, '--text', 'http://10.0.2.2:3001']);
-  await gcloudAvm(['act-key', '--run', runPath, '--keycode', '28', '--mode', 'press']);
-  const mcp = join(trialRoot, 'avm-mcp.json');
-  await writeFile(mcp, `${JSON.stringify({
-    project: config.project, zone: config.zone, instance: config.instance,
-    remoteAvm: config.remoteAvm, remoteRun: runPath,
-    remoteBrowserScript: config.remoteBrowserScript,
-    browserEndpoint: 'http://127.0.0.1:9222',
-    ...(condition === 'C' ? { localAvm: config.localAvm, remoteChannel: channel } : {}),
-  }, null, 2)}\n`);
-  return { run: runPath, channel, mcp, tunnelPid, proxyPid };
+  let runPath;
+  try {
+    if (await waitUntilStartable()) {
+      must(await run(config.gcloud, ['compute', 'instances', 'start', config.instance, '--project', config.project, '--zone', config.zone, '--quiet'], workspace, config.vmWallTimeMs));
+    }
+    const label = trialRoot.split('/').at(-1);
+    if (!/^[a-zA-Z0-9._-]+$/.test(label)) throw new Error('unsafe trial label');
+    const remoteCandidate = `${config.remoteCandidateRoot}/${label}`;
+    const remoteStateRoot = `${config.remoteStateRoot}/${label}`;
+    await gcloudSsh(`mkdir -p ${quote(remoteCandidate)} ${quote(remoteStateRoot)}`);
+    runPath = output(await gcloudAvm(['create-run', '--base-image', config.baseImage, '--candidate', remoteCandidate, '--state-root', remoteStateRoot]));
+    const displaySocket = `${dirname(runPath)}/display.sock`;
+    if (Buffer.byteLength(displaySocket) >= 108) throw new Error(`remote display socket path exceeds Unix limit: ${displaySocket}`);
+    const localSupervisor = join(trialRoot, 'remote-channel');
+    const channel = output(await run(config.localAvm, ['remote-channel-create', '--local-candidate', workspace, '--state-root', localSupervisor, '--project', config.project, '--zone', config.zone, '--instance', config.instance, '--remote-run', runPath, '--remote-avm', config.remoteAvm], workspace));
+    must(await run(config.localAvm, ['remote-publish', '--channel', channel], workspace, config.vmWallTimeMs));
+    await gcloudAvm(['start', '--run', runPath]);
+    await waitForGuest();
+    const guestState = `/tmp/avm-board-${label}.json`;
+    const unit = `avm-target-${label}`;
+    const launch = `systemd-run --user --unit=${unit} --collect --property=WorkingDirectory=/workspace --setenv=HOST=127.0.0.1 --setenv=PORT=3000 --setenv=BOARD_STATE=${guestState} --setenv=BOARD_LATENCY_MS=120 /usr/bin/node --watch server.mjs`;
+    await gcloudSsh(`${guestSsh()} ${quote(launch)}`);
+    await waitForTarget();
+    const tunnelPid = output(await gcloudSsh(`${guestSsh('-N -L 127.0.0.1:13000:127.0.0.1:3000')} >/tmp/avm-tunnel-${label}.log 2>&1 & echo $!`));
+    const proxyPid = output(await gcloudSsh(`cd ${quote(dirname(config.remoteFaultProxy))} && { EVALUATOR_PORT=3001 TARGET_ORIGIN=http://127.0.0.1:13000 FAULT_PROFILE=${quote(config.remoteFaultProfile)} nohup node ${quote(config.remoteFaultProxy)} </dev/null >/tmp/avm-proxy-${label}.log 2>&1 & echo $!; }`));
+    await gcloudAvm(['act-type', '--run', runPath, '--text', 'http://10.0.2.2:3001']);
+    await gcloudAvm(['act-key', '--run', runPath, '--keycode', '28', '--mode', 'press']);
+    const mcp = join(trialRoot, 'avm-mcp.json');
+    await writeFile(mcp, `${JSON.stringify({
+      project: config.project, zone: config.zone, instance: config.instance,
+      remoteAvm: config.remoteAvm, remoteRun: runPath,
+      remoteBrowserScript: config.remoteBrowserScript,
+      browserEndpoint: 'http://127.0.0.1:9222',
+      ...(condition === 'C' ? { localAvm: config.localAvm, remoteChannel: channel } : {}),
+    }, null, 2)}\n`);
+    return { run: runPath, channel, mcp, tunnelPid, proxyPid };
+  } catch (error) {
+    if (runPath) try { await gcloudAvm(['stop', '--run', runPath]); } catch {}
+    try { must(await run(config.gcloud, ['compute', 'instances', 'stop', config.instance, '--project', config.project, '--zone', config.zone, '--quiet'], workspace, config.vmWallTimeMs)); } catch {}
+    throw error;
+  }
+}
+
+async function waitUntilStartable() {
+  const deadline = Date.now() + config.vmWallTimeMs;
+  while (Date.now() < deadline) {
+    const result = must(await run(config.gcloud, ['compute', 'instances', 'describe', config.instance, '--project', config.project, '--zone', config.zone, '--format=value(status)'], workspace, 30000));
+    const status = result.stdout.trim();
+    if (status === 'RUNNING') return false;
+    if (status === 'TERMINATED') return true;
+    await new Promise(resolveWait => setTimeout(resolveWait, 2000));
+  }
+  throw new Error('timed out waiting for GCE instance to become startable');
 }
 
 async function waitForGuest() {
   const command = `for n in $(seq 1 120); do ${guestSsh()} ${quote('test -d /workspace && systemctl is-active --quiet weston.service && pgrep -x chrome >/dev/null')} >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1`;
+  await gcloudSsh(command, config.vmWallTimeMs);
+}
+
+async function waitForTarget() {
+  const command = `for n in $(seq 1 60); do ${guestSsh()} ${quote('curl -fsS http://127.0.0.1:3000/api/state >/dev/null')} >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1`;
   await gcloudSsh(command, config.vmWallTimeMs);
 }
 
