@@ -49,6 +49,7 @@ impl ApprovalMode {
 #[derive(Clone, Debug)]
 pub struct AppServerOptions {
     pub command: Vec<String>,
+    pub config_overrides: Vec<String>,
     pub cwd: PathBuf,
     pub prompt: String,
     pub model: Option<String>,
@@ -61,6 +62,7 @@ impl AppServerOptions {
     pub fn codex(cwd: impl AsRef<Path>, prompt: impl Into<String>) -> Self {
         Self {
             command: vec!["codex".into(), "app-server".into(), "--stdio".into()],
+            config_overrides: Vec::new(),
             cwd: cwd.as_ref().to_owned(),
             prompt: prompt.into(),
             model: None,
@@ -240,9 +242,10 @@ pub async fn run_app_server_turn(
         ),
         "unsupported App Server approval policy"
     );
-    let mut command = Command::new(&options.command[0]);
+    let command_parts = app_server_command(&options);
+    let mut command = Command::new(&command_parts[0]);
     command
-        .args(&options.command[1..])
+        .args(&command_parts[1..])
         .current_dir(&options.cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -436,6 +439,20 @@ pub async fn run_app_server_turn(
     })
 }
 
+fn app_server_command(options: &AppServerOptions) -> Vec<String> {
+    if options.config_overrides.is_empty() || options.command != ["codex", "app-server", "--stdio"]
+    {
+        return options.command.clone();
+    }
+    let mut command = vec!["codex".into(), "--ignore-user-config".into()];
+    for value in &options.config_overrides {
+        command.push("-c".into());
+        command.push(value.clone());
+    }
+    command.extend(["app-server".into(), "--stdio".into()]);
+    command
+}
+
 fn sandbox_policy_type(sandbox: &str) -> Result<&'static str> {
     match sandbox {
         "workspace-write" => Ok("workspaceWrite"),
@@ -575,6 +592,28 @@ mod tests {
     use super::*;
     use crate::event::MemoryEventSink;
 
+    #[test]
+    fn app_server_config_overrides_ignore_user_config_and_precede_subcommand() {
+        let mut options = AppServerOptions::codex("/tmp/candidate", "test");
+        options.config_overrides = vec![
+            "mcp_servers.avm.command=\"node\"".into(),
+            "mcp_servers.avm.required=true".into(),
+        ];
+        assert_eq!(
+            app_server_command(&options),
+            vec![
+                "codex",
+                "--ignore-user-config",
+                "-c",
+                "mcp_servers.avm.command=\"node\"",
+                "-c",
+                "mcp_servers.avm.required=true",
+                "app-server",
+                "--stdio",
+            ]
+        );
+    }
+
     #[tokio::test]
     async fn supervises_handshake_items_approval_and_turn_completion() {
         let temp = tempfile::tempdir().unwrap();
@@ -603,6 +642,7 @@ sys.stdin.read()
         let sink = Arc::new(MemoryEventSink::default());
         let options = AppServerOptions {
             command: vec!["python3".into(), script.display().to_string()],
+            config_overrides: Vec::new(),
             cwd: temp.path().to_owned(),
             prompt: "test".into(),
             model: None,
@@ -744,6 +784,7 @@ sys.stdin.read()
             &mut policy,
             AppServerOptions {
                 command: vec!["python3".into(), script.display().to_string()],
+                config_overrides: Vec::new(),
                 cwd: candidate.path().into(),
                 prompt: "change label".into(),
                 model: None,

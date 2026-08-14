@@ -239,6 +239,8 @@ enum Command {
         prompt: String,
         #[arg(long)]
         model: Option<String>,
+        #[arg(long = "codex-config")]
+        codex_config: Vec<String>,
         #[arg(long, value_enum, default_value_t = ApprovalArgument::Decline)]
         approval: ApprovalArgument,
         #[arg(long, value_enum, default_value_t = ApprovalPolicyArgument::OnRequest)]
@@ -677,6 +679,7 @@ async fn main() -> Result<()> {
             state_root,
             prompt,
             model,
+            codex_config,
             approval,
             approval_policy,
             channel,
@@ -713,6 +716,7 @@ async fn main() -> Result<()> {
             };
             let mut options = AppServerOptions::codex(&context.candidate_workspace, prompt);
             options.model = model;
+            options.config_overrides = codex_config;
             options.approval_mode = approval.into();
             options.approval_policy = approval_policy.as_wire_value().into();
             let result = match policy {
