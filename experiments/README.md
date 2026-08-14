@@ -18,9 +18,11 @@ pre-edit declaration and an independently recorded post-batch command. B/C
 receive the narrow AVM MCP tools. For those rich conditions, the wrapper starts
 a fresh QEMU overlay, publishes the candidate, runs the candidate server inside
 the nested guest at `/workspace`, and keeps the private fault proxy on the GCE
-host behind an SSH tunnel. Candidate code therefore cannot read host supervisor
+host behind an SSH tunnel. A separate SSH tunnel connects GCE loopback port
+9223 to Chromium's guest-loopback CDP port, and a `/json/version` readiness gate
+must pass before Codex starts. Candidate code therefore cannot read host supervisor
 state, evaluator tests, credentials, or the base image. Cleanup stops QEMU and
-then GCE even after an agent failure.
+both tunnels, then stops GCE even after an agent failure.
 
 Run `node experiments/real-agent-check.mjs` to validate the four capability
 plans without contacting GCE. `real-evaluator.mjs` combines a blind hidden score

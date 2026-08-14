@@ -15,6 +15,15 @@ diagnosis credit, and no catastrophic implementation or human intervention was
 recorded. The correct conclusion is that this implementation established the
 measurement path but did not demonstrate the core product-quality hypothesis.
 
+Post-run audit found that both gated-rich calls to `avm_browser_observe` failed
+with `connectOverCDP: socket hang up`. QEMU's host-forward reached the guest NIC,
+while this Chromium build accepted CDP only on guest loopback. Framebuffer and
+accessibility perception remained available, but the run did not expose the
+complete browser-enabled rich stack. These numbers are therefore retained as
+historical observations, not accepted as the final controlled test of rich
+workstation perception. The browser transport fix requires a new balanced run
+before drawing that conclusion.
+
 ## Design and integrity
 
 The run used Codex `gpt-5.6-terra`, Codex CLI 0.146.0, pinned repository commit
@@ -77,8 +86,9 @@ repository. Recompute the summaries with:
 node experiments/analyze.mjs /path/to/run/results.jsonl
 ```
 
-The primary limitations are the sample size (`n=2` per condition), one task and
-one model, no complete App Server token accounting, and a scorer whose two
-functional checks do not provide a graded measure of implementation quality.
+The primary limitations are the incomplete browser channel described above,
+sample size (`n=2` per condition), one task and one model, no complete App Server
+token accounting, and a scorer whose two functional checks do not provide a
+graded measure of implementation quality.
 These results justify improving measurement coverage and repeating across more
 tasks; they do not justify claiming a workstation benefit.

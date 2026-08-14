@@ -22,6 +22,7 @@ const plan = {
   evidenceGating: gated,
   codexLocation: 'local',
   candidateExecution: rich ? 'nested-guest' : 'local-tests-only',
+  browserTransport: rich ? 'guest-loopback-via-ssh-tunnel' : 'not-exposed',
   vmCleanup: rich ? 'stop-qemu-then-stop-gce' : 'not-started',
 };
 await writeFile(join(trialRoot, 'capability-plan.json'), `${JSON.stringify(plan, null, 2)}\n`);
@@ -144,7 +145,9 @@ async function prepareRemote() {
     const launch = `systemd-run --user --unit=${unit} --collect --property=WorkingDirectory=/workspace --setenv=HOST=127.0.0.1 --setenv=PORT=3000 --setenv=BOARD_STATE=${guestState} --setenv=BOARD_LATENCY_MS=120 /usr/bin/node --watch server.mjs`;
     await gcloudSsh(`${guestSsh()} ${quote(launch)}`);
     await waitForTarget();
-    const tunnelPid = output(await gcloudSsh(`${guestSsh('-N -L 127.0.0.1:13000:127.0.0.1:3000')} >/tmp/avm-tunnel-${label}.log 2>&1 & echo $!`));
+    const targetTunnelPid = output(await gcloudSsh(`${guestSsh('-o ExitOnForwardFailure=yes -N -L 127.0.0.1:13000:127.0.0.1:3000')} >/tmp/avm-target-tunnel-${label}.log 2>&1 & echo $!`));
+    const browserTunnelPid = output(await gcloudSsh(`${guestSsh('-o ExitOnForwardFailure=yes -N -L 127.0.0.1:9223:127.0.0.1:9222')} >/tmp/avm-browser-tunnel-${label}.log 2>&1 & echo $!`));
+    await waitForBrowser();
     const proxyPid = output(await gcloudSsh(`cd ${quote(dirname(config.remoteFaultProxy))} && { EVALUATOR_PORT=3001 TARGET_ORIGIN=http://127.0.0.1:13000 FAULT_PROFILE=${quote(config.remoteFaultProfile)} nohup node ${quote(config.remoteFaultProxy)} </dev/null >/tmp/avm-proxy-${label}.log 2>&1 & echo $!; }`));
     await gcloudAvm(['act-type', '--run', runPath, '--text', 'http://10.0.2.2:3001']);
     await gcloudAvm(['act-key', '--run', runPath, '--keycode', '28', '--mode', 'press']);
@@ -153,10 +156,10 @@ async function prepareRemote() {
       project: config.project, zone: config.zone, instance: config.instance,
       remoteAvm: config.remoteAvm, remoteRun: runPath,
       remoteBrowserScript: config.remoteBrowserScript,
-      browserEndpoint: 'http://127.0.0.1:9222',
+      browserEndpoint: 'http://127.0.0.1:9223',
       ...(condition === 'C' ? { localAvm: config.localAvm, remoteChannel: channel } : {}),
     }, null, 2)}\n`);
-    return { run: runPath, channel, mcp, tunnelPid, proxyPid };
+    return { run: runPath, channel, mcp, targetTunnelPid, browserTunnelPid, proxyPid };
   } catch (error) {
     if (runPath) try { await gcloudAvm(['stop', '--run', runPath]); } catch {}
     try { must(await run(config.gcloud, ['compute', 'instances', 'stop', config.instance, '--project', config.project, '--zone', config.zone, '--quiet'], workspace, config.vmWallTimeMs)); } catch {}
@@ -199,9 +202,14 @@ async function waitForTarget() {
   await gcloudSsh(command, config.vmWallTimeMs);
 }
 
+async function waitForBrowser() {
+  const command = 'for n in $(seq 1 30); do curl -fsS http://127.0.0.1:9223/json/version >/dev/null && exit 0; sleep 1; done; exit 1';
+  await gcloudSsh(command, config.vmWallTimeMs);
+}
+
 async function cleanupRemote(remoteState) {
   try { await gcloudAvm(['stop', '--run', remoteState.run]); } catch {}
-  try { await gcloudSsh(`kill ${Number(remoteState.proxyPid)} ${Number(remoteState.tunnelPid)} 2>/dev/null || true`); } catch {}
+  try { await gcloudSsh(`kill ${Number(remoteState.proxyPid)} ${Number(remoteState.targetTunnelPid)} ${Number(remoteState.browserTunnelPid)} 2>/dev/null || true`); } catch {}
   try { must(await run(config.gcloud, ['compute', 'instances', 'stop', config.instance, '--project', config.project, '--zone', config.zone, '--quiet'], workspace, config.vmWallTimeMs)); } catch {}
 }
 

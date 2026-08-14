@@ -449,6 +449,7 @@ pub async fn run_browser_observer(
         let sink = sink.clone();
         tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
+            let mut captured = Vec::new();
             while let Some(line) = lines.next_line().await? {
                 sink.record(RawEvent::observed(
                     session_id,
@@ -456,8 +457,9 @@ pub async fn run_browser_observer(
                     "browser.observer.stderr",
                     json!({"line": line}),
                 ))?;
+                captured.push(line);
             }
-            Ok::<(), anyhow::Error>(())
+            Ok::<Vec<String>, anyhow::Error>(captured)
         })
     };
     let mut event_count = 0_u64;
@@ -499,10 +501,14 @@ pub async fn run_browser_observer(
         event_count += 1;
     }
     let status = child.wait().await?;
-    stderr_task
+    let stderr_lines = stderr_task
         .await
         .context("join browser stderr recorder")??;
-    ensure!(status.success(), "browser observer failed with {status}");
+    ensure!(
+        status.success(),
+        "browser observer failed with {status}: {}",
+        stderr_lines.join("\n")
+    );
     ensure!(
         options.trace_path.is_file(),
         "browser observer produced no trace"
@@ -582,6 +588,35 @@ printf '%s' 'trace bytes' > "$trace"
         assert_eq!(events[0].source_timestamp, Some(json!({"clock": 1})));
         assert_eq!(events[0].artifact_refs.len(), 1);
         assert_eq!(events[1].artifact_refs, vec![result.trace_artifact_ref]);
+    }
+
+    #[tokio::test]
+    async fn surfaces_observer_stderr_on_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let script = temp.path().join("failed-observer.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\necho 'CDP transport reset' >&2\nexit 7\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let sink = Arc::new(MemoryEventSink::default());
+        let error = run_browser_observer(
+            Uuid::new_v4(),
+            sink.clone(),
+            Arc::new(ArtifactStore::new(temp.path().join("artifacts")).unwrap()),
+            BrowserObserverOptions {
+                command: vec![script.display().to_string()],
+                endpoint: "http://127.0.0.1:9223".into(),
+                trace_path: temp.path().join("trace.zip"),
+                sensor_artifacts_dir: temp.path().join("sensor-artifacts"),
+                duration_ms: 1,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("CDP transport reset"));
+        assert_eq!(sink.events()[0].kind, "browser.observer.stderr");
     }
 
     #[test]

@@ -21,6 +21,7 @@ try {
     await new Promise((resolveExit, reject) => child.on('exit', code => code === 0 ? resolveExit() : reject(new Error(`condition ${condition} exited ${code}`))));
     const plan = JSON.parse(stdout); assert.equal(plan.richPerception, condition === 'B' || condition === 'C'); assert.equal(plan.evidenceGating, condition === 'B' || condition === 'D');
     assert.equal(plan.candidateExecution, plan.richPerception ? 'nested-guest' : 'local-tests-only');
+    assert.equal(plan.browserTransport, plan.richPerception ? 'guest-loopback-via-ssh-tunnel' : 'not-exposed');
     assert.deepEqual(JSON.parse(await readFile(join(trial, 'capability-plan.json'), 'utf8')), plan);
   }
   console.log(JSON.stringify({ ok: true, conditions: 4, candidateExecution: 'nested-guest-for-rich' }));
