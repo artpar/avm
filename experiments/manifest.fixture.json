@@ -1,0 +1,18 @@
+{
+  "model":"fixture-model",
+  "modelSettings":{"reasoning":"fixed"},
+  "repository":"benchmarks/target-app",
+  "task":"experiments/fixture-task.txt",
+  "startingVmSnapshot":"sha256:fixture",
+  "dependenciesDigest":"sha256:fixture",
+  "resourceAllowance":{"wallTimeMs":10000,"evaluatorWallTimeMs":10000},
+  "randomizationSeed":"avm-fixture-v1",
+  "repetitions":2,
+  "evaluatorCommand":["node","{repositoryRoot}/experiments/fixture-evaluator.mjs","{workspace}"],
+  "conditions":{
+    "A":{"capabilities":{"richPerception":false,"evidenceGating":false},"agentCommand":["node","{repositoryRoot}/experiments/fixture-agent.mjs"]},
+    "B":{"capabilities":{"richPerception":true,"evidenceGating":true},"agentCommand":["node","{repositoryRoot}/experiments/fixture-agent.mjs"]},
+    "C":{"capabilities":{"richPerception":true,"evidenceGating":false},"agentCommand":["node","{repositoryRoot}/experiments/fixture-agent.mjs"]},
+    "D":{"capabilities":{"richPerception":false,"evidenceGating":true},"agentCommand":["node","{repositoryRoot}/experiments/fixture-agent.mjs"]}
+  }
+}
