@@ -23,6 +23,9 @@ pub struct TemporalConfig {
     pub motion_min_distance_px: f64,
     pub motion_min_match_ratio: f64,
     pub component_min_pixels: u64,
+    pub cursor_max_width_px: u32,
+    pub cursor_max_height_px: u32,
+    pub cursor_proximity_px: u32,
 }
 
 impl Default for TemporalConfig {
@@ -37,6 +40,9 @@ impl Default for TemporalConfig {
             motion_min_distance_px: 24.0,
             motion_min_match_ratio: 0.70,
             component_min_pixels: 4,
+            cursor_max_width_px: 64,
+            cursor_max_height_px: 64,
+            cursor_proximity_px: 32,
         }
     }
 }
@@ -62,6 +68,10 @@ impl TemporalConfig {
         ensure!(
             (0.0..=1.0).contains(&self.motion_min_match_ratio),
             "motion match ratio must be between zero and one"
+        );
+        ensure!(
+            self.cursor_max_width_px > 0 && self.cursor_max_height_px > 0,
+            "cursor candidate dimensions must be positive"
         );
         Ok(())
     }
@@ -90,6 +100,7 @@ pub struct DisplayChangeFact {
     pub changed_ratio_in_announced_rect: f64,
     pub changed_ratio_of_screen: f64,
     pub resulting_frame_sha256: String,
+    pub cursor_only_candidate: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -234,6 +245,19 @@ pub fn analyze_temporal(
         }
     }
 
+    classify_cursor_only_changes(&ordered, &mut facts, &config, &mut observations);
+    let cursor_event_ids = facts
+        .iter()
+        .filter(|fact| fact.cursor_only_candidate)
+        .map(|fact| fact.event_id)
+        .collect::<BTreeSet<_>>();
+    observations.retain(|item| {
+        item.kind != "display.pixel_translation_detected"
+            || !item
+                .supporting_event_ids
+                .iter()
+                .any(|id| cursor_event_ids.contains(id))
+    });
     derive_action_responses(
         &ordered,
         &facts,
@@ -243,8 +267,22 @@ pub fn analyze_temporal(
         &mut observations,
     );
     derive_repeated_regions(&facts, &config, &mut observations);
-    derive_state_reversions(&states, start_ns, end_ns, &config, &mut observations);
-    derive_multiple_states(&ordered, &states, start_ns, end_ns, &mut observations);
+    derive_state_reversions(
+        &states,
+        &cursor_event_ids,
+        start_ns,
+        end_ns,
+        &config,
+        &mut observations,
+    );
+    derive_multiple_states(
+        &ordered,
+        &states,
+        &cursor_event_ids,
+        start_ns,
+        end_ns,
+        &mut observations,
+    );
     derive_network_display_order(&ordered, &facts, start_ns, &config, &mut observations);
     observations.sort_by_key(|item| (item.start_ns, item.end_ns, item.kind.clone()));
 
@@ -274,6 +312,7 @@ fn derive_action_responses(
         let deadline = input.host_monotonic_ns.saturating_add(window_ns);
         let response = facts.iter().find(|fact| {
             fact.changed_pixels > 0
+                && !fact.cursor_only_candidate
                 && fact.host_monotonic_ns > input.host_monotonic_ns
                 && fact.host_monotonic_ns <= deadline
         });
@@ -321,7 +360,7 @@ fn derive_repeated_regions(
 ) {
     let facts = facts
         .iter()
-        .filter(|fact| fact.changed_pixels > 0)
+        .filter(|fact| fact.changed_pixels > 0 && !fact.cursor_only_candidate)
         .collect::<Vec<_>>();
     let window_ns = config.repeated_region_window_ms.saturating_mul(1_000_000);
     let mut index = 0;
@@ -357,6 +396,7 @@ fn derive_repeated_regions(
 
 fn derive_state_reversions(
     states: &[FrameState],
+    cursor_event_ids: &BTreeSet<Uuid>,
     start_ns: u64,
     end_ns: u64,
     config: &TemporalConfig,
@@ -382,6 +422,8 @@ fn derive_state_reversions(
         if before.hash == restored.hash
             && before.hash != transient.hash
             && restored.timestamp - before.timestamp <= window_ns
+            && !cursor_event_ids.contains(&transient.event_id)
+            && !cursor_event_ids.contains(&restored.event_id)
         {
             observations.push(observation(
                 "display.state_reverted",
@@ -402,6 +444,7 @@ fn derive_state_reversions(
 fn derive_multiple_states(
     events: &[&RawEvent],
     states: &[FrameState],
+    cursor_event_ids: &BTreeSet<Uuid>,
     start_ns: u64,
     end_ns: u64,
     observations: &mut Vec<TemporalObservation>,
@@ -425,7 +468,9 @@ fn derive_multiple_states(
         let during = states
             .iter()
             .filter(|state| {
-                state.timestamp > down.host_monotonic_ns && state.timestamp < up.host_monotonic_ns
+                state.timestamp > down.host_monotonic_ns
+                    && state.timestamp < up.host_monotonic_ns
+                    && !cursor_event_ids.contains(&state.event_id)
             })
             .collect::<Vec<_>>();
         let distinct = during
@@ -463,6 +508,7 @@ fn derive_network_display_order(
     }) {
         if let Some(display) = facts.iter().find(|fact| {
             fact.changed_pixels > 0
+                && !fact.cursor_only_candidate
                 && fact.host_monotonic_ns > response.host_monotonic_ns
                 && fact.host_monotonic_ns <= response.host_monotonic_ns.saturating_add(window_ns)
         }) {
@@ -561,6 +607,7 @@ fn display_change_fact(
         changed_ratio_in_announced_rect: ratio(difference.changed_pixels, announced_pixels),
         changed_ratio_of_screen: ratio(difference.changed_pixels, screen_pixels),
         resulting_frame_sha256: after.sha256(),
+        cursor_only_candidate: false,
     };
     if fact.changed_ratio_of_screen >= config.large_changed_screen_ratio {
         observations.push(observation(
@@ -584,6 +631,69 @@ fn display_change_fact(
         config,
     ));
     Ok(fact)
+}
+
+fn classify_cursor_only_changes(
+    events: &[&RawEvent],
+    facts: &mut [DisplayChangeFact],
+    config: &TemporalConfig,
+    observations: &mut Vec<TemporalObservation>,
+) {
+    let window_ns = config.response_window_ms.saturating_mul(1_000_000);
+    for fact in facts.iter_mut().filter(|fact| fact.changed_pixels > 0) {
+        let Some(bounds) = fact.changed_bounds else {
+            continue;
+        };
+        if bounds.width > config.cursor_max_width_px || bounds.height > config.cursor_max_height_px
+        {
+            continue;
+        }
+        let Some((pointer, x, y)) = events.iter().rev().find_map(|event| {
+            if event.kind != "pointer.move"
+                || event.host_monotonic_ns >= fact.host_monotonic_ns
+                || fact
+                    .host_monotonic_ns
+                    .saturating_sub(event.host_monotonic_ns)
+                    > window_ns
+            {
+                return None;
+            }
+            let detail = event.payload.get("detail")?;
+            Some((
+                *event,
+                u32::try_from(detail.get("x")?.as_u64()?).ok()?,
+                u32::try_from(detail.get("y")?.as_u64()?).ok()?,
+            ))
+        }) else {
+            continue;
+        };
+        let padding = config.cursor_proximity_px;
+        let near_x = x >= bounds.x.saturating_sub(padding)
+            && x <= bounds
+                .x
+                .saturating_add(bounds.width)
+                .saturating_add(padding);
+        let near_y = y >= bounds.y.saturating_sub(padding)
+            && y <= bounds
+                .y
+                .saturating_add(bounds.height)
+                .saturating_add(padding);
+        if near_x && near_y {
+            fact.cursor_only_candidate = true;
+            observations.push(observation(
+                "display.cursor_only_change",
+                pointer.host_monotonic_ns,
+                fact.host_monotonic_ns,
+                vec![pointer.id, fact.event_id],
+                json!({
+                    "requestedPointer": {"x": x, "y": y},
+                    "changedBounds": bounds,
+                    "changedPixels": fact.changed_pixels,
+                    "classification": "small_change_near_recent_pointer_destination",
+                }),
+            ));
+        }
+    }
 }
 
 fn pixel_difference(before: &Framebuffer, after: &Framebuffer) -> Result<Difference> {
@@ -955,5 +1065,57 @@ mod tests {
         assert!(analysis.observations.iter().any(|item| {
             item.kind == "input.visual_response" && item.payload["delayed"] == true
         }));
+    }
+
+    #[test]
+    fn cursor_pixels_do_not_satisfy_application_response() {
+        let temp = tempfile::tempdir().unwrap();
+        let artifacts = ArtifactStore::new(temp.path()).unwrap();
+        let session = Uuid::new_v4();
+        let black = vec![0_u8; 40 * 10 * 4];
+        let mut cursor = black.clone();
+        for y in 4..7 {
+            for x in 9..12 {
+                let offset = (y * 40 + x) * 4;
+                cursor[offset..offset + 4].copy_from_slice(&[255, 255, 255, 0]);
+            }
+        }
+        let initial = scanout(session, &artifacts, &black);
+        let pointer = RawEvent::observed_at(
+            session,
+            1_000_000,
+            "input",
+            "pointer.move",
+            json!({"detail": {"x": 10, "y": 5}}),
+        );
+        let mut cursor_frame = scanout(session, &artifacts, &cursor);
+        cursor_frame.host_monotonic_ns = 100_000_000;
+        let analysis = analyze_temporal(
+            &[initial, pointer, cursor_frame],
+            &artifacts,
+            0,
+            1_200_000_000,
+            TemporalConfig::default(),
+        )
+        .unwrap();
+        assert!(analysis.display_change_facts[0].cursor_only_candidate);
+        assert!(
+            analysis
+                .observations
+                .iter()
+                .any(|item| item.kind == "display.cursor_only_change")
+        );
+        assert!(
+            analysis
+                .observations
+                .iter()
+                .any(|item| { item.kind == "input.pointer_move_without_display_response" })
+        );
+        assert!(
+            !analysis
+                .observations
+                .iter()
+                .any(|item| item.kind == "input.visual_response")
+        );
     }
 }
