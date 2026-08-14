@@ -39,6 +39,12 @@ interactions; `node experiments/real-evaluator-check.mjs` verifies that merge.
 The deployment config and real manifest are environment-specific evidence and
 must stay outside the candidate repository.
 
+Before a real batch, run one rich condition with `--preflight`. This performs
+the exact guest, target, proxy, application tunnel, CDP tunnel, browser observer,
+timeline and cleanup path without starting Codex, and writes
+`preflight-result.json`. A batch should not start unless the result contains a
+positive `browserEventCount` and a content-addressed browser trace.
+
 Run `node experiments/analyze.mjs PATH/TO/results.jsonl` to validate a completed
 balanced run and calculate per-condition means, rich-perception and
 evidence-gating main effects, and the factorial interaction. Null measurements

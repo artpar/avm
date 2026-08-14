@@ -3,9 +3,9 @@ import { dirname, join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { metricsFromAppEvents, metricsFromExecEvents } from './agent-metrics.mjs';
 
-const [configPath, condition, workspaceArgument, trialRootArgument, taskPath, dryRunFlag] = process.argv.slice(2);
+const [configPath, condition, workspaceArgument, trialRootArgument, taskPath, modeFlag] = process.argv.slice(2);
 if (!configPath || !['A', 'B', 'C', 'D'].includes(condition) || !workspaceArgument || !trialRootArgument || !taskPath) {
-  throw new Error('usage: node real-agent.mjs CONFIG A|B|C|D WORKSPACE TRIAL_ROOT TASK [--dry-run]');
+  throw new Error('usage: node real-agent.mjs CONFIG A|B|C|D WORKSPACE TRIAL_ROOT TASK [--dry-run|--preflight]');
 }
 const config = JSON.parse(await readFile(configPath, 'utf8'));
 const workspace = resolve(workspaceArgument);
@@ -13,7 +13,9 @@ const trialRoot = resolve(trialRootArgument);
 const task = (await readFile(taskPath, 'utf8')).trim();
 const rich = condition === 'B' || condition === 'C';
 const gated = condition === 'B' || condition === 'D';
-const dryRun = dryRunFlag === '--dry-run';
+const dryRun = modeFlag === '--dry-run';
+const preflight = modeFlag === '--preflight';
+if (modeFlag && !dryRun && !preflight) throw new Error(`unknown mode ${modeFlag}`);
 validateConfig(config);
 await mkdir(trialRoot, { recursive: true });
 
@@ -29,6 +31,32 @@ const plan = {
 await writeFile(join(trialRoot, 'capability-plan.json'), `${JSON.stringify(plan, null, 2)}\n`);
 if (dryRun) {
   process.stdout.write(`${JSON.stringify(plan)}\n`);
+  process.exit(0);
+}
+if (preflight) {
+  if (!rich) throw new Error('--preflight requires rich condition B or C');
+  let remoteState;
+  try {
+    remoteState = await prepareRemote();
+    const observation = must(await gcloudAvm([
+      'browser-observe', '--run', remoteState.run,
+      '--endpoint', 'http://127.0.0.1:9223',
+      '--script', config.remoteBrowserScript,
+      '--duration-ms', '500',
+    ]));
+    const browser = JSON.parse(observation.stdout.trim());
+    const result = {
+      ...plan,
+      remoteRun: remoteState.run,
+      browserEventCount: browser.eventCount,
+      browserTraceArtifactRef: browser.traceArtifactRef,
+      productInteractions: await recordedInteractions(remoteState),
+    };
+    await writeFile(join(trialRoot, 'preflight-result.json'), `${JSON.stringify(result, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+  } finally {
+    if (remoteState) await cleanupRemote(remoteState);
+  }
   process.exit(0);
 }
 
