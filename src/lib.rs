@@ -1,4 +1,6 @@
 pub mod accessibility;
+#[cfg(unix)]
+pub mod audio;
 pub mod browser;
 pub mod codex;
 pub mod event;

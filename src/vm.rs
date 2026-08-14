@@ -370,11 +370,15 @@ impl VmController {
             format!("unix:{},server=on,wait=off", paths.qmp_socket.display()),
             "-display".into(),
             format!(
-                "dbus,addr=unix:path={},gl=off",
+                "dbus,addr=unix:path={},gl=off,audiodev=avm-audio",
                 paths.display_socket.display()
             ),
             "-audiodev".into(),
-            "none,id=noaudio".into(),
+            "dbus,id=avm-audio".into(),
+            "-device".into(),
+            "ich9-intel-hda".into(),
+            "-device".into(),
+            "hda-duplex,audiodev=avm-audio".into(),
             "-boot".into(),
             "order=c".into(),
             "-no-reboot".into(),
@@ -534,7 +538,12 @@ mod tests {
         assert!(args.contains("q35,accel=kvm"));
         assert!(args.contains("driver=qcow2,node-name=os"));
         assert!(args.contains("-qmp unix:/outside/run/qmp.sock,server=on,wait=off"));
-        assert!(args.contains("-display dbus,addr=unix:path=/outside/run/display.sock,gl=off"));
+        assert!(args.contains(
+            "-display dbus,addr=unix:path=/outside/run/display.sock,gl=off,audiodev=avm-audio"
+        ));
+        assert!(args.contains("-audiodev dbus,id=avm-audio"));
+        assert!(args.contains("-device ich9-intel-hda"));
+        assert!(args.contains("-device hda-duplex,audiodev=avm-audio"));
         assert!(args.contains("socket,id=charfs,path=/outside/run/virtiofs.sock"));
         assert!(args.contains("pcie-root-port,id=fs-root-port"));
         assert!(!args.contains("vhost-user-fs-pci"));

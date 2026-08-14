@@ -351,6 +351,13 @@ enum Command {
         output: PathBuf,
     },
     #[cfg(target_os = "linux")]
+    AudioObserve {
+        #[arg(long)]
+        run: PathBuf,
+        #[arg(long, default_value_t = 10_000)]
+        duration_ms: u64,
+    },
+    #[cfg(target_os = "linux")]
     Smoke {
         #[arg(long)]
         run: PathBuf,
@@ -802,6 +809,8 @@ async fn main() -> Result<()> {
             let hash = computer.save_screenshot(&output)?;
             println!("{}", json!({"screenshot": output, "frameSha256": hash}));
         }
+        #[cfg(target_os = "linux")]
+        Command::AudioObserve { run, duration_ms } => audio_observe(&run, duration_ms).await?,
         #[cfg(target_os = "linux")]
         Command::Smoke {
             run,
@@ -1580,6 +1589,33 @@ async fn connect_computer(config: &RunConfig) -> Result<avm::display::HostComput
     )?);
     let artifacts = Arc::new(ArtifactStore::new(&paths.artifacts)?);
     avm::display::HostComputer::connect(&paths.display_socket, config.id, sink, artifacts).await
+}
+
+#[cfg(target_os = "linux")]
+async fn audio_observe(run: &Path, duration_ms: u64) -> Result<()> {
+    ensure!(
+        duration_ms > 0,
+        "audio observation duration must be positive"
+    );
+    let config = load_run(run)?;
+    config.ensure_current_host_boot()?;
+    ensure!(
+        VmController::new(config.clone()).is_running(),
+        "VM must be running to observe audio"
+    );
+    let paths = config.paths();
+    let sink: Arc<dyn EventSink> = Arc::new(ExperienceEventSink::open_dynamic(
+        &paths.timeline,
+        &paths.events,
+        &config.candidate_workspace,
+    )?);
+    let artifacts = Arc::new(ArtifactStore::new(&paths.artifacts)?);
+    let capture =
+        avm::audio::AudioCapture::connect(&paths.display_socket, config.id, sink, artifacts)
+            .await?;
+    let result = capture.observe(Duration::from_millis(duration_ms)).await?;
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]

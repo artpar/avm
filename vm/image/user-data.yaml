@@ -13,6 +13,7 @@ ssh_pwauth: false
 package_update: true
 package_upgrade: false
 packages:
+  - alsa-utils
   - at-spi2-core
   - build-essential
   - chromium-browser
