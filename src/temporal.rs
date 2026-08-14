@@ -23,6 +23,7 @@ pub struct TemporalConfig {
     pub motion_min_distance_px: f64,
     pub motion_min_match_ratio: f64,
     pub component_min_pixels: u64,
+    pub motion_max_components: usize,
     pub cursor_max_width_px: u32,
     pub cursor_max_height_px: u32,
     pub cursor_proximity_px: u32,
@@ -40,6 +41,7 @@ impl Default for TemporalConfig {
             motion_min_distance_px: 24.0,
             motion_min_match_ratio: 0.70,
             component_min_pixels: 4,
+            motion_max_components: 64,
             cursor_max_width_px: 64,
             cursor_max_height_px: 64,
             cursor_proximity_px: 32,
@@ -73,6 +75,10 @@ impl TemporalConfig {
             self.cursor_max_width_px > 0 && self.cursor_max_height_px > 0,
             "cursor candidate dimensions must be positive"
         );
+        ensure!(
+            self.motion_max_components >= 2,
+            "motion component limit must be at least two"
+        );
         Ok(())
     }
 }
@@ -95,6 +101,7 @@ pub struct DisplayChangeFact {
     pub announced_rect: PixelBounds,
     pub changed_bounds: Option<PixelBounds>,
     pub changed_component_bounds: Vec<PixelBounds>,
+    pub changed_component_count: usize,
     pub changed_pixels: u64,
     pub announced_pixels: u64,
     pub screen_pixels: u64,
@@ -535,10 +542,12 @@ fn motion_observations(
     components: &[Component],
     config: &TemporalConfig,
 ) -> Vec<TemporalObservation> {
-    let components = components
+    let mut components = components
         .iter()
         .filter(|component| component.pixels.len() as u64 >= config.component_min_pixels)
         .collect::<Vec<_>>();
+    components.sort_by_key(|component| std::cmp::Reverse(component.pixels.len()));
+    components.truncate(config.motion_max_components);
     let mut best: Option<(usize, usize, f64, i64, i64)> = None;
     for first in 0..components.len() {
         for second in first + 1..components.len() {
@@ -605,8 +614,10 @@ fn display_change_fact(
         changed_component_bounds: difference
             .components
             .iter()
+            .take(4)
             .map(|component| component.bounds)
             .collect(),
+        changed_component_count: difference.components.len(),
         changed_pixels: difference.changed_pixels,
         announced_pixels,
         screen_pixels,
@@ -651,7 +662,7 @@ fn classify_cursor_only_changes(
             continue;
         };
         if fact.changed_component_bounds.is_empty()
-            || fact.changed_component_bounds.len() > 4
+            || fact.changed_component_count > 4
             || fact.changed_component_bounds.iter().any(|component| {
                 component.width > config.cursor_max_width_px
                     || component.height > config.cursor_max_height_px
@@ -703,6 +714,7 @@ fn classify_cursor_only_changes(
                     "requestedPointer": {"x": x, "y": y},
                     "changedBounds": bounds,
                     "changedComponentBounds": fact.changed_component_bounds,
+                    "changedComponentCount": fact.changed_component_count,
                     "changedPixels": fact.changed_pixels,
                     "classification": "small_change_near_recent_pointer_destination",
                 }),
@@ -716,6 +728,13 @@ fn pixel_difference(before: &Framebuffer, after: &Framebuffer) -> Result<Differe
         before.width() == after.width() && before.height() == after.height(),
         "frame dimensions changed without a scanout"
     );
+    if before.bytes() == after.bytes() {
+        return Ok(Difference {
+            bounds: None,
+            changed_pixels: 0,
+            components: Vec::new(),
+        });
+    }
     let width = before.width() as usize;
     let height = before.height() as usize;
     let mut changed = vec![false; width * height];
