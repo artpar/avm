@@ -24,6 +24,14 @@ must pass before Codex starts. Candidate code therefore cannot read host supervi
 state, evaluator tests, credentials, or the base image. Cleanup stops QEMU and
 both tunnels, then stops GCE even after an agent failure.
 
+The wrapper preserves ordinary Codex Exec JSONL as `codex-events.jsonl`; gated
+trials already retain the complete App Server stream in their supervisor event
+log. Token cost uses each stream's authoritative cumulative total. Failed
+implementation attempts are failed command executions after the first file
+mutation, while rework counts later file-change completions after such a
+failure. MCP sensor failures are reported separately as `toolFailures` and are
+not mislabeled as failed implementations.
+
 Run `node experiments/real-agent-check.mjs` to validate the four capability
 plans without contacting GCE. `real-evaluator.mjs` combines a blind hidden score
 with externally recorded duration, tool/model use when available, and product

@@ -17,5 +17,7 @@ const merged = {
   toolCalls: agent.toolCalls ?? score.toolCalls,
   modelTokens: agent.modelTokens ?? score.modelTokens,
   productInteractions: agent.productInteractions ?? score.productInteractions,
+  failedAttempts: agent.failedAttempts ?? score.failedAttempts,
+  rework: agent.rework ?? score.rework,
 };
 process.stdout.write(`${JSON.stringify(merged)}\n`);

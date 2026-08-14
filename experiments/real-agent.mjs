@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
+import { metricsFromAppEvents, metricsFromExecEvents } from './agent-metrics.mjs';
 
 const [configPath, condition, workspaceArgument, trialRootArgument, taskPath, dryRunFlag] = process.argv.slice(2);
 if (!configPath || !['A', 'B', 'C', 'D'].includes(condition) || !workspaceArgument || !trialRootArgument || !taskPath) {
@@ -52,6 +53,9 @@ try {
     remoteRun: remote?.run ?? null,
     toolCalls: usage.toolCalls,
     modelTokens: usage.modelTokens,
+    failedAttempts: usage.failedAttempts,
+    rework: usage.rework,
+    toolFailures: usage.toolFailures,
     productInteractions,
   };
   await writeFile(join(trialRoot, 'agent-metrics.json'), `${JSON.stringify(metrics, null, 2)}\n`);
@@ -65,7 +69,9 @@ async function runOrdinary(prompt, remoteState) {
   const args = ['exec', '--json', '--ephemeral', '--ignore-user-config', '--ignore-rules', '--sandbox', 'workspace-write', '--color', 'never', '-m', config.model, '-C', workspace, '-o', join(trialRoot, 'codex-final.txt')];
   if (remoteState) args.push(...mcpOverrides(remoteState.mcp));
   args.push(prompt);
-  return { result: await run(config.codex, args, workspace, config.agentWallTimeMs) };
+  const result = await run(config.codex, args, workspace, config.agentWallTimeMs);
+  await writeFile(join(trialRoot, 'codex-events.jsonl'), result.stdout.endsWith('\n') ? result.stdout : `${result.stdout}\n`);
+  return { result };
 }
 
 async function runGated(prompt, remoteState) {
@@ -96,13 +102,10 @@ async function runGated(prompt, remoteState) {
 async function agentUsage(agent) {
   if (agent.session) {
     const lines = (await readFile(join(dirname(agent.session), 'events.jsonl'), 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
-    const toolCalls = lines.filter(event => event.kind === 'codex.command.started' || event.kind === 'codex.mcp_tool_call.started').length;
-    const completed = lines.filter(event => event.kind === 'codex.turn.completed').at(-1)?.payload;
-    return { toolCalls, modelTokens: usageTokens(completed) };
+    return metricsFromAppEvents(lines);
   }
   const events = agent.result.stdout.split('\n').filter(Boolean).flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
-  const toolCalls = events.filter(event => event.type === 'item.started' && ['command_execution', 'mcp_tool_call'].includes(event.item?.type)).length;
-  return { toolCalls, modelTokens: usageTokens(events.filter(event => event.type === 'turn.completed').at(-1)) };
+  return metricsFromExecEvents(events);
 }
 
 async function recordedInteractions(remoteState) {
@@ -111,13 +114,6 @@ async function recordedInteractions(remoteState) {
     const value = JSON.parse(history.stdout);
     return value.events.filter(event => event.kind !== 'input.action.completed').length;
   } catch { return null; }
-}
-
-function usageTokens(value) {
-  const usage = value?.usage || value?.turn?.usage || value?.params?.turn?.usage;
-  if (!usage || typeof usage !== 'object') return null;
-  const values = Object.entries(usage).filter(([key, item]) => /token/i.test(key) && typeof item === 'number' && !/total/i.test(key)).map(([, item]) => item);
-  return values.length ? values.reduce((sum, item) => sum + item, 0) : null;
 }
 
 async function prepareRemote() {
