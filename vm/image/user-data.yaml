@@ -2,7 +2,7 @@
 users:
   - name: avm
     uid: 1000
-    groups: [adm, audio, input, render, sudo, video]
+    groups: [adm, audio, dialout, input, render, sudo, video]
     shell: /bin/bash
     sudo: ALL=(ALL) NOPASSWD:ALL
     lock_passwd: true
