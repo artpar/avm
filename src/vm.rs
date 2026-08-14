@@ -34,6 +34,7 @@ pub struct RunPaths {
     pub overlay: PathBuf,
     pub qmp_socket: PathBuf,
     pub display_socket: PathBuf,
+    pub accessibility_socket: PathBuf,
     pub dbus_pid: PathBuf,
     pub dbus_log: PathBuf,
     pub virtiofs_socket: PathBuf,
@@ -89,6 +90,7 @@ impl RunConfig {
             overlay: self.state_dir.join("overlay.qcow2"),
             qmp_socket: self.state_dir.join("qmp.sock"),
             display_socket: self.state_dir.join("display.sock"),
+            accessibility_socket: self.state_dir.join("accessibility.sock"),
             dbus_pid: self.state_dir.join("dbus.pid"),
             dbus_log: self.state_dir.join("dbus.log"),
             virtiofs_socket: self.state_dir.join("virtiofs.sock"),
@@ -339,6 +341,16 @@ impl VmController {
             "usb-kbd".into(),
             "-device".into(),
             "usb-tablet".into(),
+            "-device".into(),
+            "virtio-serial-pci,id=guest-sensors".into(),
+            "-chardev".into(),
+            format!(
+                "socket,id=accessibility,path={},server=on,wait=off",
+                paths.accessibility_socket.display()
+            ),
+            "-device".into(),
+            "virtserialport,bus=guest-sensors.0,chardev=accessibility,name=org.avm.accessibility"
+                .into(),
             "-blockdev".into(),
             format!(
                 "driver=qcow2,node-name=os,file.driver=file,file.filename={}",
@@ -437,6 +449,7 @@ fn remove_stale_sockets(paths: &RunPaths) -> Result<()> {
     for path in [
         &paths.qmp_socket,
         &paths.display_socket,
+        &paths.accessibility_socket,
         &paths.virtiofs_socket,
     ] {
         if path.exists() {
@@ -526,6 +539,13 @@ mod tests {
         assert!(args.contains("pcie-root-port,id=fs-root-port"));
         assert!(!args.contains("vhost-user-fs-pci"));
         assert!(args.contains("memory-backend-memfd,id=guestmem,size=2048M,share=on"));
+        assert!(args.contains("virtio-serial-pci,id=guest-sensors"));
+        assert!(args.contains(
+            "socket,id=accessibility,path=/outside/run/accessibility.sock,server=on,wait=off"
+        ));
+        assert!(args.contains(
+            "virtserialport,bus=guest-sensors.0,chardev=accessibility,name=org.avm.accessibility"
+        ));
         assert!(args.contains("-numa node,memdev=guestmem"));
         assert!(args.contains("usb-tablet"));
         assert!(args.ends_with("-S"));

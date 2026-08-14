@@ -9,6 +9,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail, ensure};
 use avm::storage::ArtifactStore;
 use avm::{
+    accessibility::observe_accessibility,
     browser::{
         BrowserObserverOptions, correlate_viewport_png, diagnose_double_submit_failure,
         run_browser_observer,
@@ -157,6 +158,12 @@ enum Command {
         observation_index: Option<usize>,
         #[arg(long)]
         prompt: Option<String>,
+    },
+    AccessibilityObserve {
+        #[arg(long)]
+        run: PathBuf,
+        #[arg(long, default_value_t = 10_000)]
+        duration_ms: u64,
     },
     BrowserObserve {
         #[arg(long)]
@@ -528,6 +535,9 @@ async fn main() -> Result<()> {
             observation_index,
             prompt.as_deref().unwrap_or(DEFAULT_VLM_PROMPT),
         )?,
+        Command::AccessibilityObserve { run, duration_ms } => {
+            accessibility_observe(&run, duration_ms)?
+        }
         Command::BrowserObserve {
             run,
             endpoint,
@@ -1386,6 +1396,29 @@ fn vlm_observe(
     )?;
     record_canonical(&config, event)?;
     println!("{}", serde_json::to_string_pretty(&observation)?);
+    Ok(())
+}
+
+fn accessibility_observe(run: &Path, duration_ms: u64) -> Result<()> {
+    let config = load_run(run)?;
+    config.ensure_current_host_boot()?;
+    ensure!(
+        VmController::new(config.clone()).is_running(),
+        "VM must be running to observe guest accessibility"
+    );
+    let paths = config.paths();
+    let sink: Arc<dyn EventSink> = Arc::new(ExperienceEventSink::open_dynamic(
+        &paths.timeline,
+        &paths.events,
+        &config.candidate_workspace,
+    )?);
+    let result = observe_accessibility(
+        config.id,
+        &paths.accessibility_socket,
+        sink,
+        std::time::Duration::from_millis(duration_ms),
+    )?;
+    println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
 }
 
