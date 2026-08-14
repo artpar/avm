@@ -444,7 +444,7 @@ fn app_server_command(options: &AppServerOptions) -> Vec<String> {
     {
         return options.command.clone();
     }
-    let mut command = vec!["codex".into(), "--ignore-user-config".into()];
+    let mut command = vec!["codex".into()];
     for value in &options.config_overrides {
         command.push("-c".into());
         command.push(value.clone());
@@ -593,7 +593,7 @@ mod tests {
     use crate::event::MemoryEventSink;
 
     #[test]
-    fn app_server_config_overrides_ignore_user_config_and_precede_subcommand() {
+    fn app_server_config_overrides_precede_subcommand() {
         let mut options = AppServerOptions::codex("/tmp/candidate", "test");
         options.config_overrides = vec![
             "mcp_servers.avm.command=\"node\"".into(),
@@ -603,7 +603,6 @@ mod tests {
             app_server_command(&options),
             vec![
                 "codex",
-                "--ignore-user-config",
                 "-c",
                 "mcp_servers.avm.command=\"node\"",
                 "-c",
