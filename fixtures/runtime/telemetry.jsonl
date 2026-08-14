@@ -1,0 +1,4 @@
+{"kind":"span","traceId":"0123456789abcdef0123456789abcdef","spanId":"0123456789abcdef","name":"POST /api/cards","startTimeUnixNano":"1786700000000000000","endTimeUnixNano":"1786700000050000000","status":{"code":"OK"},"attributes":{"http.request.method":"POST","url.path":"/api/cards"}}
+{"kind":"application_log","timestampUnixNano":"1786700000030000000","severityText":"INFO","body":"card persisted","traceId":"0123456789abcdef0123456789abcdef","spanId":"0123456789abcdef","attributes":{"card.id":"fixture-card"}}
+{"kind":"process_status","processId":4242,"state":"exited","exitCode":0,"executable":"fixture-server"}
+{"kind":"profile_sample","timestampUnixNano":"1786700000040000000","processId":4242,"threadId":7,"stack":["persist_card","handle_post","server_loop"],"weight":1}

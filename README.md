@@ -18,6 +18,8 @@ Implemented now:
 - a Codex App Server stdio client that records thread, turn, message, command, file-change, MCP, and approval traffic with repository fingerprints;
 - a `codex exec --json` baseline recorder;
 - browser navigation, DOM, accessibility, console, network, performance, screenshot, and trace observation through a supervisor-owned CDP tunnel;
+- reconnectable guest AT-SPI snapshots and events for Chromium and native applications over an isolated virtio-serial channel;
+- bounded runtime ingestion for application logs, OpenTelemetry-style spans, process status, and profiling samples;
 - pixel-matched browser-to-framebuffer coordinate correlation and deterministic duplicate-submit failure diagnosis;
 - bounded temporal analysis of full scanouts and rectangular updates, including delayed or absent application response, repeated regions, A-B-A reversions, and exact pixel translations;
 - QEMU-backed click actuation with separately timestamped move, pointer-down, and pointer-up receipts;
@@ -58,6 +60,11 @@ target/release/avm act-click --run /var/lib/avm/runs/RUN_ID/run.json --x 640 --y
 target/release/avm temporal-analyze \
   --run /var/lib/avm/runs/RUN_ID/run.json \
   --start-ns ACTION_START_NS --end-ns OBSERVATION_END_NS
+target/release/avm accessibility-observe \
+  --run /var/lib/avm/runs/RUN_ID/run.json --duration-ms 10000
+target/release/avm runtime-import \
+  --run /var/lib/avm/runs/RUN_ID/run.json \
+  --input fixtures/runtime/telemetry.jsonl
 ```
 
 `temporal-analyze` reconstructs consecutive same-sized full scanouts as well as rectangular display updates. It records its derived result back into the run timeline as `perception.temporal.analysis`. Small connected pixel changes near a recent pointer destination are retained as `display.cursor_only_change` evidence but cannot satisfy an application visual-response claim. Exact translated components are reported with source and destination bounds, displacement, and pixel match ratio.
@@ -99,7 +106,9 @@ target/release/avm experience-query \
   --input query.json
 ```
 
-Supported query kinds are `aroundEvent`, `networkFrames`, `visibleWhilePointerDown`, `browserElementUnderPointer`, `evidenceSinceFingerprint`, `beforeConsoleException`, `lastDialog`, and `richerVisualEvidence`. Results put directly observed events first, followed by deterministic derivations, model interpretations, and agent claims in separate fields. Relevant temporal and VLM results are joined by the interval in their payload even when analysis completed later. Frame lists are content-addressed and collapse adjacent identical framebuffer states. Browser hit-testing uses a pixel-verified viewport correlation, CDP layout bounds and paint order, and the accessibility tree; it reports the correlated snapshot distance rather than claiming a live DOM hit-test. Network request/response association currently uses URL plus order and states that limitation because the browser sensor does not yet emit a transport request ID.
+Supported query kinds are `aroundEvent`, `networkFrames`, `visibleWhilePointerDown`, `browserElementUnderPointer`, `evidenceSinceFingerprint`, `beforeConsoleException`, `lastDialog`, `richerVisualEvidence`, and `runtimeTrace`. Results put directly observed events first, followed by deterministic derivations, model interpretations, and agent claims in separate fields. Relevant temporal and VLM results are joined by the interval in their payload even when analysis completed later. Frame lists are content-addressed and collapse adjacent identical framebuffer states. Browser hit-testing uses a pixel-verified viewport correlation, CDP layout bounds and paint order, and the accessibility tree; it reports the correlated snapshot distance rather than claiming a live DOM hit-test. Network request/response association currently uses URL plus order and states that limitation because the browser sensor does not yet emit a transport request ID.
+
+`runtimeTrace` anchors on an imported runtime span or log. Exact trace-ID members are labeled `declared_by_instrumentation`; browser, input, display, and other events in the returned interval are explicitly labeled non-causal temporal context. The raw JSONL batch is retained as one immutable artifact, while each normalized event preserves its source timestamp and sequence. Runtime instrumentation is intentionally selective: AVM does not trace every function call, and existing browser traces and process evidence remain the preferred sources when they already answer the question.
 
 Create an externally owned session and run Codex under its supervisor store:
 
@@ -158,4 +167,4 @@ Contradictory evidence moves policy to `EVIDENCE_FAILED`. Further declarations a
 
 ## Current boundary
 
-This is not the completed research system. Milestones one through seven have passed their current acceptance gates on a real GCE Linux/KVM host: VM lifecycle/reset, persistent experience, local Codex App Server supervision over a remote channel, authoritative browser observation/failure diagnosis, evaluator-owned policy plus evidence enforcement, temporal perception, and a queryable cross-source experience. The temporal gate used a deterministic guest fixture to prove cursor movement without application response, delayed response, repeated region changes with A-B-A reversions, and an exact 160-pixel translation. A provider-neutral, event-triggered VLM adapter is implemented and verified with reconstructable frame provenance; a live provider call is deployment configuration rather than a fixed dependency. Guest AT-SPI, runtime/audio sources, the evaluator application, performance characterization, and the controlled experiment remain later milestones.
+This is not the completed research system. Milestones one through eight have passed their current acceptance gates on a real GCE Linux/KVM host: VM lifecycle/reset, persistent experience, local Codex App Server supervision over a remote channel, authoritative browser observation/failure diagnosis, evaluator-owned policy plus evidence enforcement, temporal perception, a queryable cross-source experience, and reconnectable native accessibility. The temporal gate used a deterministic guest fixture to prove cursor movement without application response, delayed response, repeated region changes with A-B-A reversions, and an exact 160-pixel translation. A provider-neutral, event-triggered VLM adapter is implemented and verified with reconstructable frame provenance; a live provider call is deployment configuration rather than a fixed dependency. The AT-SPI gate directly inspected Chromium, XFCE Terminal, and Galculator, and preserved a 264-node Chromium/terminal tree across separate host observers without restarting the guest sensor. Selective runtime telemetry import and trace-context queries are implemented locally. Audio, the evaluator application, performance characterization, and the controlled experiment remain later milestones.
