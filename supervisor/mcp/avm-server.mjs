@@ -7,6 +7,14 @@ import readline from 'node:readline';
 const config=JSON.parse(await readFile(process.argv[2],'utf8')); validateConfig(config);
 const tools=[
   tool('avm_capture','Capture the authoritative VM framebuffer and return it as an image.',{}),
+  tool('avm_experience','Observe current state, reconstruct a historical frame, replay an interval, or inspect recorded structure.',{
+    operation:{type:'string',enum:['observe','frame','replay','inspect']},
+    recentLimit:{type:'integer',minimum:1,maximum:100},
+    atNs:{type:'integer',minimum:0},eventId:{type:'string'},
+    startNs:{type:'integer',minimum:0},endNs:{type:'integer',minimum:0},lastDurationMs:{type:'integer',minimum:1},
+    inspectKind:{type:'string',enum:['event','browser_element','last_dialog']},
+    text:{type:'string'},beforeMs:{type:'integer',minimum:0},afterMs:{type:'integer',minimum:0}
+  },['operation']),
   tool('avm_act','Perform one recorded guest input action and return its action ID.',{
     action:{type:'string',enum:['move_pointer','click','double_click','mouse_down','mouse_up','drag','scroll','key_down','key_up','key_press','type_text','wait']},
     x:{type:'integer',minimum:0},y:{type:'integer',minimum:0},
@@ -20,7 +28,7 @@ const tools=[
   tool('avm_type','Type text through the real guest keyboard.',{text:{type:'string',maxLength:4096}},['text']),
   tool('avm_key','Send one Linux input keycode through QEMU.',{keycode:{type:'integer',minimum:0,maximum:767},mode:{type:'string',enum:['press','down','up']}},['keycode']),
   tool('avm_history','Read recorded cross-source history.',{lastDurationMs:{type:'integer',minimum:1},source:{type:'array',items:{type:'string'}}}),
-  tool('avm_query','Run a structured experience query.',{query:{type:'object'}},['query']),
+  tool('avm_query','Query recorded experience. Kinds: aroundEvent, networkFrames, visibleWhilePointerDown, browserElementUnderPointer, evidenceSinceFingerprint, beforeConsoleException, lastDialog, richerVisualEvidence, runtimeTrace.',{query:{type:'object',properties:{kind:{type:'string',enum:['aroundEvent','networkFrames','visibleWhilePointerDown','browserElementUnderPointer','evidenceSinceFingerprint','beforeConsoleException','lastDialog','richerVisualEvidence','runtimeTrace']}},required:['kind'],additionalProperties:true}},['query']),
   tool('avm_accessibility','Observe a fresh native accessibility tree and events.',{durationMs:{type:'integer',minimum:1,maximum:60000}}),
   tool('avm_browser_observe','Record a CDP browser snapshot, network, console, performance, screenshot, and trace.',{durationMs:{type:'integer',minimum:1,maximum:60000}})
 ];
@@ -35,6 +43,7 @@ function validateConfig(value){for(const key of ['project','zone','instance','re
 function shellQuote(value){return `'${String(value).replaceAll("'","'\\''")}'`}
 async function callTool(name,args){
   if(name==='avm_capture')return capture();
+  if(name==='avm_experience')return experience(args);
   if(name==='avm_act')return text(await act(args));
   if(name==='avm_click')return text(await runAvm(['act-click','--run',config.remoteRun,'--x',integer(args.x),'--y',integer(args.y)]));
   if(name==='avm_type')return text(await runAvm(['act-type','--run',config.remoteRun,'--text',String(args.text)]));
@@ -62,7 +71,23 @@ async function act(args){
 function integer(value){if(!Number.isSafeInteger(Number(value)))throw new Error('expected integer');return String(value)}
 function requiredInteger(args,name){if(args[name]===undefined)throw new Error(`${args.action} requires ${name}`);return integer(args[name])}
 function text(output){return{content:[{type:'text',text:output}]}}
+async function experience(args){
+  if(args.operation==='observe')return text(await runAvm(['observe','--run',config.remoteRun,'--recent-limit',integer(args.recentLimit??20)]));
+  if(args.operation==='frame'){const command=['frame','--run',config.remoteRun];if(args.atNs!==undefined)command.push('--at-ns',integer(args.atNs));if(args.eventId!==undefined)command.push('--event-id',String(args.eventId));return imageFromAvm(command,'Historical frame reconstructed from immutable display evidence.','frame')}
+  if(args.operation==='replay'){const command=['replay','--run',config.remoteRun];appendInterval(command,args);return text(await runAvm(command))}
+  if(args.operation==='inspect'){
+    let queryValue;
+    if(args.inspectKind==='event'){if(!args.eventId)throw new Error('event inspection requires eventId');queryValue={kind:'aroundEvent',eventId:String(args.eventId),beforeMs:Number(args.beforeMs??500),afterMs:Number(args.afterMs??2000)}}
+    else if(args.inspectKind==='browser_element'){if(!args.eventId)throw new Error('browser element inspection requires a pointer eventId');queryValue={kind:'browserElementUnderPointer',eventId:String(args.eventId)}}
+    else if(args.inspectKind==='last_dialog')queryValue={kind:'lastDialog',text:args.text===undefined?null:String(args.text)};
+    else throw new Error('inspect requires inspectKind');
+    return text(await query(queryValue));
+  }
+  throw new Error(`unsupported experience operation ${args.operation}`)
+}
+function appendInterval(command,args){if(args.startNs!==undefined)command.push('--start-ns',integer(args.startNs));if(args.endNs!==undefined)command.push('--end-ns',integer(args.endNs));if(args.lastDurationMs!==undefined)command.push('--last-duration-ms',integer(args.lastDurationMs))}
 async function runAvm(args){const command=`cd ${shellQuote(dirname(config.remoteAvm))} && ${[config.remoteAvm,...args].map(shellQuote).join(' ')}`;return run('gcloud',['compute','ssh',config.instance,'--project',config.project,'--zone',config.zone,'--command',command])}
-async function capture(){const remote=`/tmp/avm-mcp-${process.pid}-${Date.now()}.png`;await runAvm(['capture','--run',config.remoteRun,'--output',remote]);const temporary=await mkdtemp(join(tmpdir(),'avm-mcp-'));const local=join(temporary,'frame.png');try{await run('gcloud',['compute','scp',`${config.instance}:${remote}`,local,'--project',config.project,'--zone',config.zone]);const data=await readFile(local);return{content:[{type:'image',data:data.toString('base64'),mimeType:'image/png'},{type:'text',text:'Authoritative QEMU framebuffer capture.'}]} }finally{await rm(temporary,{recursive:true,force:true})}}
+async function capture(){return imageFromAvm(['capture','--run',config.remoteRun],'Authoritative QEMU framebuffer capture.','capture')}
+async function imageFromAvm(command,description,label){const remote=`/tmp/avm-mcp-${process.pid}-${Date.now()}.png`;const metadata=await runAvm([...command,'--output',remote]);const temporary=await mkdtemp(join(tmpdir(),`avm-${label}-`));const local=join(temporary,'frame.png');try{await run('gcloud',['compute','scp',`${config.instance}:${remote}`,local,'--project',config.project,'--zone',config.zone]);const data=await readFile(local);return{content:[{type:'image',data:data.toString('base64'),mimeType:'image/png'},{type:'text',text:`${description}\n${metadata}`}]} }finally{await rm(temporary,{recursive:true,force:true})}}
 async function query(value){const temporary=await mkdtemp(join(tmpdir(),'avm-query-'));const local=join(temporary,'query.json');const remote=`/tmp/avm-query-${process.pid}-${Date.now()}.json`;try{await writeFile(local,JSON.stringify(value));await run('gcloud',['compute','scp',local,`${config.instance}:${remote}`,'--project',config.project,'--zone',config.zone]);return runAvm(['experience-query','--run',config.remoteRun,'--input',remote])}finally{await rm(temporary,{recursive:true,force:true})}}
 function run(program,args){return new Promise((resolveRun,reject)=>{const child=spawn(program,args,{stdio:['ignore','pipe','pipe']});let stdout='',stderr='';child.stdout.on('data',chunk=>stdout+=chunk);child.stderr.on('data',chunk=>stderr+=chunk);child.on('error',reject);child.on('exit',code=>code===0?resolveRun(stdout.trim()):reject(new Error(`${program} exited ${code}: ${stderr.trim()}`)))})}
