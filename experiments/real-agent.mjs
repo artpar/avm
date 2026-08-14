@@ -125,6 +125,7 @@ async function prepareRemote() {
     if (await waitUntilStartable()) {
       must(await run(config.gcloud, ['compute', 'instances', 'start', config.instance, '--project', config.project, '--zone', config.zone, '--quiet'], workspace, config.vmWallTimeMs));
     }
+    await waitForGceSsh();
     const label = trialRoot.split('/').at(-1);
     if (!/^[a-zA-Z0-9._-]+$/.test(label)) throw new Error('unsafe trial label');
     const remoteCandidate = `${config.remoteCandidateRoot}/${label}`;
@@ -173,6 +174,19 @@ async function waitUntilStartable() {
     await new Promise(resolveWait => setTimeout(resolveWait, 2000));
   }
   throw new Error('timed out waiting for GCE instance to become startable');
+}
+
+async function waitForGceSsh() {
+  const deadline = Date.now() + config.vmWallTimeMs;
+  let lastError = '';
+  const args = ['compute', 'ssh', config.instance, '--project', config.project, '--zone', config.zone, '--command', 'true', '--quiet'];
+  while (Date.now() < deadline) {
+    const result = await run(config.gcloud, args, workspace, 15000);
+    if (result.exitCode === 0 && !result.timedOut) return;
+    lastError = result.stderr || result.stdout;
+    await new Promise(resolveWait => setTimeout(resolveWait, 2000));
+  }
+  throw new Error(`timed out waiting for GCE SSH readiness: ${lastError}`);
 }
 
 async function waitForGuest() {
