@@ -19,6 +19,8 @@ Implemented now:
 - a `codex exec --json` baseline recorder;
 - browser navigation, DOM, accessibility, console, network, performance, screenshot, and trace observation through a supervisor-owned CDP tunnel;
 - pixel-matched browser-to-framebuffer coordinate correlation and deterministic duplicate-submit failure diagnosis;
+- bounded temporal analysis of full scanouts and rectangular updates, including delayed or absent application response, repeated regions, A-B-A reversions, and exact pixel translations;
+- QEMU-backed click actuation with separately timestamped move, pointer-down, and pointer-up receipts;
 - evaluator-owned policy phases, evidence debt, structured declarations and diagnoses, immutable evidence records, and fingerprint-bound workspace promotion;
 - supervisor-owned staging so Codex mutations cannot reach the candidate before policy-controlled promotion.
 
@@ -51,7 +53,13 @@ target/release/avm observe --run /var/lib/avm/runs/RUN_ID/run.json
 target/release/avm history --run /var/lib/avm/runs/RUN_ID/run.json --source input
 target/release/avm frame --run /var/lib/avm/runs/RUN_ID/run.json --at-ns MONOTONIC_NS --output /tmp/frame.png
 target/release/avm replay --run /var/lib/avm/runs/RUN_ID/run.json --last-duration-ms 10000
+target/release/avm act-click --run /var/lib/avm/runs/RUN_ID/run.json --x 640 --y 360 --wait-after-ms 1000
+target/release/avm temporal-analyze \
+  --run /var/lib/avm/runs/RUN_ID/run.json \
+  --start-ns ACTION_START_NS --end-ns OBSERVATION_END_NS
 ```
+
+`temporal-analyze` reconstructs consecutive same-sized full scanouts as well as rectangular display updates. It records its derived result back into the run timeline as `perception.temporal.analysis`. Small connected pixel changes near a recent pointer destination are retained as `display.cursor_only_change` evidence but cannot satisfy an application visual-response claim. Exact translated components are reported with source and destination bounds, displacement, and pixel match ratio.
 
 Create an externally owned session and run Codex under its supervisor store:
 
@@ -110,4 +118,4 @@ Contradictory evidence moves policy to `EVIDENCE_FAILED`. Further declarations a
 
 ## Current boundary
 
-This is not the completed research system. Milestones one through five have passed their current acceptance gates on a real GCE Linux/KVM host: VM lifecycle/reset, persistent experience, local Codex App Server supervision over a remote channel, authoritative browser observation/failure diagnosis, and evaluator-owned policy plus evidence enforcement. Temporal perception, VLM-derived observations, broader experience queries, guest AT-SPI, runtime/audio sources, the evaluator application, and the controlled experiment remain later milestones.
+This is not the completed research system. Milestones one through six have passed their current acceptance gates on a real GCE Linux/KVM host: VM lifecycle/reset, persistent experience, local Codex App Server supervision over a remote channel, authoritative browser observation/failure diagnosis, evaluator-owned policy plus evidence enforcement, and temporal perception. The temporal gate used a deterministic guest fixture to prove cursor movement without application response, delayed response, repeated region changes with A-B-A reversions, and an exact 160-pixel translation. VLM-derived observations, broader experience queries, guest AT-SPI, runtime/audio sources, the evaluator application, and the controlled experiment remain later milestones.
