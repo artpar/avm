@@ -21,6 +21,7 @@ Implemented now:
 - pixel-matched browser-to-framebuffer coordinate correlation and deterministic duplicate-submit failure diagnosis;
 - bounded temporal analysis of full scanouts and rectangular updates, including delayed or absent application response, repeated regions, A-B-A reversions, and exact pixel translations;
 - QEMU-backed click actuation with separately timestamped move, pointer-down, and pointer-up receipts;
+- event-triggered, provider-neutral VLM observations over content-addressed before/during/after frames, retained separately from direct evidence;
 - evaluator-owned policy phases, evidence debt, structured declarations and diagnoses, immutable evidence records, and fingerprint-bound workspace promotion;
 - supervisor-owned staging so Codex mutations cannot reach the candidate before policy-controlled promotion.
 
@@ -60,6 +61,26 @@ target/release/avm temporal-analyze \
 ```
 
 `temporal-analyze` reconstructs consecutive same-sized full scanouts as well as rectangular display updates. It records its derived result back into the run timeline as `perception.temporal.analysis`. Small connected pixel changes near a recent pointer destination are retained as `display.cursor_only_change` evidence but cannot satisfy an application visual-response claim. Exact translated components are reported with source and destination bounds, displacement, and pixel match ratio.
+
+To interpret an interesting temporal result with a multimodal model, configure a direct executable adapter:
+
+```json
+{
+  "program": "/opt/avm/bin/my-vlm-adapter",
+  "args": [],
+  "model": "provider/model-name",
+  "modelVersion": "pinned-version-or-snapshot"
+}
+```
+
+```sh
+target/release/avm vlm-observe \
+  --run /var/lib/avm/runs/RUN_ID/run.json \
+  --adapter-config /etc/avm/vlm-adapter.json \
+  --temporal-event-id TEMPORAL_ANALYSIS_EVENT_ID
+```
+
+The adapter is started directly without a shell. It receives one JSON request on stdin containing the constrained prompt plus three PNG artifact paths and hashes, and must return `{"output": ...}` on stdout. AVM invokes it only for eligible temporal observations such as delayed response, repeated updates, state reversion, or pixel translation. The resulting `perception.vlm.observation` event records the model and version, prompt, output, trigger, timestamp, and portable input artifact hashes with `model_interpreted` provenance. It neither alters nor replaces the underlying `derived` temporal event.
 
 Create an externally owned session and run Codex under its supervisor store:
 
@@ -118,4 +139,4 @@ Contradictory evidence moves policy to `EVIDENCE_FAILED`. Further declarations a
 
 ## Current boundary
 
-This is not the completed research system. Milestones one through six have passed their current acceptance gates on a real GCE Linux/KVM host: VM lifecycle/reset, persistent experience, local Codex App Server supervision over a remote channel, authoritative browser observation/failure diagnosis, evaluator-owned policy plus evidence enforcement, and temporal perception. The temporal gate used a deterministic guest fixture to prove cursor movement without application response, delayed response, repeated region changes with A-B-A reversions, and an exact 160-pixel translation. VLM-derived observations, broader experience queries, guest AT-SPI, runtime/audio sources, the evaluator application, and the controlled experiment remain later milestones.
+This is not the completed research system. Milestones one through six have passed their current acceptance gates on a real GCE Linux/KVM host: VM lifecycle/reset, persistent experience, local Codex App Server supervision over a remote channel, authoritative browser observation/failure diagnosis, evaluator-owned policy plus evidence enforcement, and temporal perception. The temporal gate used a deterministic guest fixture to prove cursor movement without application response, delayed response, repeated region changes with A-B-A reversions, and an exact 160-pixel translation. A provider-neutral, event-triggered VLM adapter is implemented and verified with reconstructable frame provenance; a live provider call is deployment configuration rather than a fixed dependency. Broader experience queries, guest AT-SPI, runtime/audio sources, the evaluator application, and the controlled experiment remain later milestones.
