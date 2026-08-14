@@ -46,7 +46,10 @@ if [[ ! -f "$ssh_key" ]]; then
 fi
 
 public_key=$(<"$ssh_key.pub")
-sed "s|@@SSH_PUBLIC_KEY@@|$public_key|" "$script_dir/user-data.yaml" >"$output_dir/user-data"
+accessibility_sensor=$(base64 -w0 "$script_dir/../guest/avm-accessibility-sensor.py")
+sed -e "s|@@SSH_PUBLIC_KEY@@|$public_key|" \
+  -e "s|@@ACCESSIBILITY_SENSOR_B64@@|$accessibility_sensor|" \
+  "$script_dir/user-data.yaml" >"$output_dir/user-data"
 cp "$script_dir/meta-data.yaml" "$output_dir/meta-data"
 cloud-localds "$seed_image" "$output_dir/user-data" "$output_dir/meta-data"
 

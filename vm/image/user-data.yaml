@@ -13,19 +13,24 @@ ssh_pwauth: false
 package_update: true
 package_upgrade: false
 packages:
+  - at-spi2-core
   - build-essential
   - chromium-browser
   - curl
   - dbus-user-session
   - fonts-dejavu-core
   - fonts-liberation
+  - galculator
+  - gir1.2-atspi-2.0
   - git
   - locales
   - nodejs
   - npm
   - openssh-server
   - python3
+  - python3-gi
   - python3-pip
+  - python3-pyatspi
   - weston
   - xwayland
 
@@ -70,6 +75,7 @@ write_files:
       Environment=HOME=/home/avm
       Environment=LANG=en_US.UTF-8
       Environment=LC_ALL=en_US.UTF-8
+      Environment=ACCESSIBILITY_ENABLED=1
       ExecStart=/usr/bin/weston --backend=drm-backend.so --shell=desktop-shell.so --idle-time=0
       Restart=on-failure
       RestartSec=1
@@ -95,7 +101,7 @@ write_files:
       panel-position=top
 
       [autolaunch]
-      path=/usr/local/bin/avm-browser
+      path=/usr/local/bin/avm-desktop-autolaunch
   - path: /usr/local/bin/avm-browser
     permissions: '0755'
     content: |
@@ -105,9 +111,25 @@ write_files:
         --remote-debugging-address=0.0.0.0 \
         --remote-debugging-port=9222 \
         --user-data-dir=/home/avm/.config/chromium-avm \
+        --force-renderer-accessibility \
         --no-first-run --disable-default-apps --disable-sync \
         --disable-background-networking --disable-features=Translate \
         about:blank
+  - path: /usr/local/bin/avm-accessibility-sensor
+    permissions: '0755'
+    encoding: b64
+    content: @@ACCESSIBILITY_SENSOR_B64@@
+  - path: /usr/local/bin/avm-desktop-autolaunch
+    permissions: '0755'
+    content: |
+      #!/bin/sh
+      (
+        while true; do
+          /usr/local/bin/avm-accessibility-sensor
+          sleep 1
+        done
+      ) &
+      exec /usr/local/bin/avm-browser
 
 runcmd:
   - [mkdir, -p, /workspace]
