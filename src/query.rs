@@ -151,7 +151,7 @@ fn around_event(
             .saturating_sub(ms_to_ns(before_ms)?),
         end_ns: anchor.host_monotonic_ns.saturating_add(ms_to_ns(after_ms)?),
     };
-    let events = store.history(Some(interval.start_ns), Some(interval.end_ns), &[])?;
+    let events = interval_events(store, &interval)?;
     let frames = replay_frames(store, &interval, frame_limit)?;
     build_result(
         query,
@@ -209,7 +209,7 @@ fn network_frames(
         start_ns: pair_start.saturating_sub(ms_to_ns(250)?),
         end_ns: pair_end.saturating_add(ms_to_ns(500)?),
     };
-    let events = store.history(Some(interval.start_ns), Some(interval.end_ns), &[])?;
+    let events = interval_events(store, &interval)?;
     let frame_times = [pair_start, pair_end];
     let frames = frames_at(store, &frame_times, frame_times.len())?;
     build_result(
@@ -248,13 +248,7 @@ fn visible_while_pointer_down(
         start_ns: down.host_monotonic_ns,
         end_ns: up.host_monotonic_ns,
     };
-    let mut events = store.history(Some(interval.start_ns), Some(interval.end_ns), &[])?;
-    let later_derived = store
-        .history(Some(interval.end_ns), None, &["perception".to_owned()])?
-        .into_iter()
-        .filter(|event| temporal_payload_overlaps(event, &interval))
-        .collect::<Vec<_>>();
-    events.extend(later_derived);
+    let events = interval_events(store, &interval)?;
     let mut times = vec![interval.start_ns, interval.end_ns];
     times.extend(
         events
@@ -340,7 +334,7 @@ fn before_console_exception(
             .saturating_sub(ms_to_ns(before_ms)?),
         end_ns: exception.host_monotonic_ns,
     };
-    let events = store.history(Some(interval.start_ns), Some(interval.end_ns), &[])?;
+    let events = interval_events(store, &interval)?;
     let frames = replay_frames(store, &interval, 8)?;
     build_result(
         query,
@@ -471,7 +465,7 @@ fn last_dialog(
         start_ns,
         end_ns: snapshot.host_monotonic_ns,
     };
-    let events = store.history(Some(interval.start_ns), Some(interval.end_ns), &[])?;
+    let events = interval_events(store, &interval)?;
     let frames = replay_frames(store, &interval, 12)?;
     build_result(
         query,
@@ -713,6 +707,20 @@ fn required_event(store: &ExperienceStore, event_id: Uuid) -> Result<RawEvent> {
         .with_context(|| format!("event {event_id} is not in the timeline"))
 }
 
+fn interval_events(store: &ExperienceStore, interval: &QueryInterval) -> Result<Vec<RawEvent>> {
+    let mut events = store.history(Some(interval.start_ns), Some(interval.end_ns), &[])?;
+    let existing = events.iter().map(|event| event.id).collect::<BTreeSet<_>>();
+    events.extend(
+        store
+            .history(None, None, &["perception".to_owned()])?
+            .into_iter()
+            .filter(|event| !existing.contains(&event.id))
+            .filter(|event| interpreted_payload_overlaps(event, interval)),
+    );
+    events.sort_by_key(|event| (event.host_monotonic_ns, event.id));
+    Ok(events)
+}
+
 fn replay_frames(
     store: &ExperienceStore,
     interval: &QueryInterval,
@@ -762,7 +770,18 @@ fn compact<T: Clone>(items: Vec<T>, limit: usize) -> Vec<T> {
         .collect()
 }
 
-fn temporal_payload_overlaps(event: &RawEvent, interval: &QueryInterval) -> bool {
+fn interpreted_payload_overlaps(event: &RawEvent, interval: &QueryInterval) -> bool {
+    if event.kind == "perception.vlm.observation" {
+        let start = event
+            .payload
+            .pointer("/trigger/startNs")
+            .and_then(Value::as_u64);
+        let end = event
+            .payload
+            .pointer("/trigger/endNs")
+            .and_then(Value::as_u64);
+        return matches!((start, end), (Some(start), Some(end)) if start <= interval.end_ns && end >= interval.start_ns);
+    }
     event.kind == "perception.temporal.analysis"
         && event
             .payload
@@ -1064,6 +1083,12 @@ mod tests {
                 .any(|event| event.id == fixture.down_id)
         );
         assert!(!around.frames.is_empty());
+        assert!(
+            around
+                .derived_events
+                .iter()
+                .any(|event| event.kind == "perception.temporal.analysis")
+        );
 
         let network = execute_query(
             &fixture.store,
