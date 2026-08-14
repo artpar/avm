@@ -4,6 +4,7 @@ import os
 import time
 
 import pyatspi
+from gi.repository import GLib
 
 DEVICE = "/dev/virtio-ports/org.avm.accessibility"
 BUS_READY_MARKER = "/run/user/1000/avm-accessibility-bus-ready"
@@ -194,6 +195,28 @@ def initial_snapshot():
     )
 
 
+def emit_ready(heartbeat):
+    desktop = pyatspi.Registry.getDesktop(0)
+    emit(
+        "accessibility.sensor.ready",
+        {
+            "observerVersion": 1,
+            "desktopCount": pyatspi.Registry.getDesktopCount(),
+            "desktopName": safely("", lambda: desktop.name),
+            "pid": os.getpid(),
+            "heartbeat": heartbeat,
+        },
+    )
+
+
+def readiness_heartbeat():
+    try:
+        emit_ready(True)
+    except Exception:
+        os._exit(1)
+    return True
+
+
 def on_event(event):
     emit(
         "accessibility.object.event",
@@ -213,15 +236,7 @@ def main():
     with open(BUS_READY_MARKER, "w", encoding="utf-8") as marker:
         marker.write("ready\n")
     output = open(DEVICE, "w", buffering=1, encoding="utf-8")
-    emit(
-        "accessibility.sensor.ready",
-        {
-            "observerVersion": 1,
-            "desktopCount": pyatspi.Registry.getDesktopCount(),
-            "desktopName": safely("", lambda: desktop.name),
-            "pid": os.getpid(),
-        },
-    )
+    emit_ready(False)
     initial_snapshot()
     for event_type in (
         "object:property-change",
@@ -233,6 +248,7 @@ def main():
         "focus:",
     ):
         pyatspi.Registry.registerEventListener(on_event, event_type)
+    GLib.timeout_add_seconds(5, readiness_heartbeat)
     pyatspi.Registry.start()
 
 
