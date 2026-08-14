@@ -35,7 +35,7 @@ impl Default for TemporalConfig {
             delayed_response_ms: 200,
             repeated_region_window_ms: 300,
             repeated_region_min_updates: 3,
-            flicker_window_ms: 300,
+            flicker_window_ms: 750,
             large_changed_screen_ratio: 0.20,
             motion_min_distance_px: 24.0,
             motion_min_match_ratio: 0.70,
@@ -94,6 +94,7 @@ pub struct DisplayChangeFact {
     pub host_monotonic_ns: u64,
     pub announced_rect: PixelBounds,
     pub changed_bounds: Option<PixelBounds>,
+    pub changed_component_bounds: Vec<PixelBounds>,
     pub changed_pixels: u64,
     pub announced_pixels: u64,
     pub screen_pixels: u64,
@@ -601,6 +602,11 @@ fn display_change_fact(
         host_monotonic_ns: event.host_monotonic_ns,
         announced_rect,
         changed_bounds: difference.bounds,
+        changed_component_bounds: difference
+            .components
+            .iter()
+            .map(|component| component.bounds)
+            .collect(),
         changed_pixels: difference.changed_pixels,
         announced_pixels,
         screen_pixels,
@@ -644,7 +650,12 @@ fn classify_cursor_only_changes(
         let Some(bounds) = fact.changed_bounds else {
             continue;
         };
-        if bounds.width > config.cursor_max_width_px || bounds.height > config.cursor_max_height_px
+        if fact.changed_component_bounds.is_empty()
+            || fact.changed_component_bounds.len() > 4
+            || fact.changed_component_bounds.iter().any(|component| {
+                component.width > config.cursor_max_width_px
+                    || component.height > config.cursor_max_height_px
+            })
         {
             continue;
         }
@@ -668,17 +679,20 @@ fn classify_cursor_only_changes(
             continue;
         };
         let padding = config.cursor_proximity_px;
-        let near_x = x >= bounds.x.saturating_sub(padding)
-            && x <= bounds
-                .x
-                .saturating_add(bounds.width)
-                .saturating_add(padding);
-        let near_y = y >= bounds.y.saturating_sub(padding)
-            && y <= bounds
-                .y
-                .saturating_add(bounds.height)
-                .saturating_add(padding);
-        if near_x && near_y {
+        let destination_component = fact.changed_component_bounds.iter().find(|component| {
+            let near_x = x >= component.x.saturating_sub(padding)
+                && x <= component
+                    .x
+                    .saturating_add(component.width)
+                    .saturating_add(padding);
+            let near_y = y >= component.y.saturating_sub(padding)
+                && y <= component
+                    .y
+                    .saturating_add(component.height)
+                    .saturating_add(padding);
+            near_x && near_y
+        });
+        if destination_component.is_some() {
             fact.cursor_only_candidate = true;
             observations.push(observation(
                 "display.cursor_only_change",
@@ -688,6 +702,7 @@ fn classify_cursor_only_changes(
                 json!({
                     "requestedPointer": {"x": x, "y": y},
                     "changedBounds": bounds,
+                    "changedComponentBounds": fact.changed_component_bounds,
                     "changedPixels": fact.changed_pixels,
                     "classification": "small_change_near_recent_pointer_destination",
                 }),
@@ -1072,30 +1087,41 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let artifacts = ArtifactStore::new(temp.path()).unwrap();
         let session = Uuid::new_v4();
-        let black = vec![0_u8; 40 * 10 * 4];
-        let mut cursor = black.clone();
+        let mut initial_pixels = vec![0_u8; 40 * 10 * 4];
         for y in 4..7 {
-            for x in 9..12 {
+            for x in 2..5 {
                 let offset = (y * 40 + x) * 4;
-                cursor[offset..offset + 4].copy_from_slice(&[255, 255, 255, 0]);
+                initial_pixels[offset..offset + 4].copy_from_slice(&[255, 255, 255, 0]);
             }
         }
-        let initial = scanout(session, &artifacts, &black);
+        let mut moved_cursor = vec![0_u8; 40 * 10 * 4];
+        for y in 4..7 {
+            for x in 29..32 {
+                let offset = (y * 40 + x) * 4;
+                moved_cursor[offset..offset + 4].copy_from_slice(&[255, 255, 255, 0]);
+            }
+        }
+        let initial = scanout(session, &artifacts, &initial_pixels);
         let pointer = RawEvent::observed_at(
             session,
             1_000_000,
             "input",
             "pointer.move",
-            json!({"detail": {"x": 10, "y": 5}}),
+            json!({"detail": {"x": 30, "y": 5}}),
         );
-        let mut cursor_frame = scanout(session, &artifacts, &cursor);
+        let mut cursor_frame = scanout(session, &artifacts, &moved_cursor);
         cursor_frame.host_monotonic_ns = 100_000_000;
+        let config = TemporalConfig {
+            cursor_max_width_px: 4,
+            cursor_max_height_px: 4,
+            ..TemporalConfig::default()
+        };
         let analysis = analyze_temporal(
             &[initial, pointer, cursor_frame],
             &artifacts,
             0,
             1_200_000_000,
-            TemporalConfig::default(),
+            config,
         )
         .unwrap();
         assert!(analysis.display_change_facts[0].cursor_only_candidate);
