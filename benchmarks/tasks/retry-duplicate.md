@@ -1,0 +1,1 @@
+Users report that clicking “New card” once can sometimes create two cards when the network retries a request. Diagnose the cause and implement a robust fix without removing optimistic updates, persistence, undo, drag/drop, search, dialogs, project switching, or keyboard shortcuts. Add targeted regression coverage and run the relevant checks.
