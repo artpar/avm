@@ -1,0 +1,8 @@
+{
+  "suspectedLayer": "Controlled process fixture rather than candidate source",
+  "causalHypothesis": "The prior contradiction was produced by the deliberate exit-9 fixture, not by check.sh",
+  "observationType": "targeted_test",
+  "instrument": "Supervisor-owned process evidence runner",
+  "actionOrCommand": "Run a controlled command that emits a layer marker and exits zero",
+  "predictedOutcomes": "Exit zero with the marker supports the fixture-layer diagnosis; another nonzero exit points to process execution"
+}

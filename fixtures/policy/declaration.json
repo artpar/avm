@@ -1,0 +1,9 @@
+{
+  "intendedBehaviorChange": "Change the visible counter label from Count to Presses in the initial and updated states",
+  "causalHypothesis": "The visible label is produced by one static HTML value and one click-handler template string",
+  "observationType": "targeted_test",
+  "instrument": "The evaluator-owned check.sh verifier",
+  "actionOrCommand": "Run ./check.sh against the promoted candidate",
+  "predictedResult": "The verifier exits zero and checks both Presses: 0 and the updated Presses count",
+  "contradictionMeaning": "A nonzero exit means at least one rendered label source or verifier expectation remains inconsistent"
+}

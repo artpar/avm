@@ -1,0 +1,119 @@
+#cloud-config
+users:
+  - name: avm
+    uid: 1000
+    groups: [adm, audio, input, render, sudo, video]
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    lock_passwd: true
+    ssh_authorized_keys:
+      - @@SSH_PUBLIC_KEY@@
+
+ssh_pwauth: false
+package_update: true
+package_upgrade: false
+packages:
+  - build-essential
+  - chromium-browser
+  - curl
+  - dbus-user-session
+  - fonts-dejavu-core
+  - fonts-liberation
+  - git
+  - locales
+  - nodejs
+  - npm
+  - openssh-server
+  - python3
+  - python3-pip
+  - weston
+  - xwayland
+
+write_files:
+  - path: /etc/systemd/system/workspace.mount
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Candidate repository supplied by host
+      After=local-fs-pre.target
+      Before=weston.service
+
+      [Mount]
+      What=candidate
+      Where=/workspace
+      Type=virtiofs
+      Options=rw,nosuid,nodev
+
+      [Install]
+      WantedBy=multi-user.target
+  - path: /etc/tmpfiles.d/avm-runtime.conf
+    permissions: '0644'
+    content: |
+      d /run/user/1000 0700 avm avm -
+  - path: /etc/systemd/system/weston.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Deterministic AVM Wayland desktop
+      After=systemd-user-sessions.service workspace.mount
+      Wants=workspace.mount
+      Conflicts=getty@tty7.service
+
+      [Service]
+      User=avm
+      PAMName=login
+      TTYPath=/dev/tty7
+      TTYReset=yes
+      TTYVHangup=yes
+      StandardInput=tty
+      Environment=XDG_RUNTIME_DIR=/run/user/1000
+      Environment=HOME=/home/avm
+      Environment=LANG=en_US.UTF-8
+      Environment=LC_ALL=en_US.UTF-8
+      ExecStart=/usr/bin/weston --backend=drm-backend.so --shell=desktop-shell.so --idle-time=0
+      Restart=on-failure
+      RestartSec=1
+
+      [Install]
+      WantedBy=graphical.target
+  - path: /home/avm/.config/weston.ini
+    owner: avm:avm
+    permissions: '0644'
+    defer: true
+    content: |
+      [core]
+      xwayland=true
+      idle-time=0
+
+      [output]
+      name=Virtual-1
+      mode=1280x720
+      scale=1
+
+      [shell]
+      locking=false
+      panel-position=top
+
+      [autolaunch]
+      path=/usr/local/bin/avm-browser
+  - path: /usr/local/bin/avm-browser
+    permissions: '0755'
+    content: |
+      #!/bin/sh
+      exec /usr/bin/chromium-browser \
+        --ozone-platform=wayland \
+        --remote-debugging-address=0.0.0.0 \
+        --remote-debugging-port=9222 \
+        --user-data-dir=/home/avm/.config/chromium-avm \
+        --no-first-run --disable-default-apps --disable-sync \
+        --disable-background-networking --disable-features=Translate \
+        about:blank
+
+runcmd:
+  - [mkdir, -p, /workspace]
+  - [locale-gen, en_US.UTF-8]
+  - [systemctl, enable, ssh.service]
+  - [systemctl, enable, workspace.mount]
+  - [systemctl, enable, weston.service]
+  - [systemctl, set-default, graphical.target]
+  - [touch, /var/lib/avm-image-ready]

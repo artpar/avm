@@ -1,0 +1,9 @@
+{
+  "intendedBehaviorChange": "Confirm the promoted counter verifier remains healthy before any further edit",
+  "causalHypothesis": "The verifier should exit zero because both Presses label sources were promoted together",
+  "observationType": "targeted_test",
+  "instrument": "Supervisor-owned process evidence runner",
+  "actionOrCommand": "Run a controlled verifier-health command and inspect its actual exit status",
+  "predictedResult": "The controlled command exits zero",
+  "contradictionMeaning": "A nonzero exit means the assumed verifier-health layer is not established"
+}

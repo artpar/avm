@@ -1,0 +1,11 @@
+{
+  "name": "avm-browser-observer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test observer.test.mjs"
+  },
+  "dependencies": {
+    "playwright-core": "1.59.1"
+  }
+}

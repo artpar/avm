@@ -1,0 +1,14 @@
+name: ci
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo fmt --check
+      - run: cargo test --all-targets
+      - run: bash -n vm/image/build-base.sh scripts/linux-smoke.sh scripts/qemu-protocol-smoke.sh
