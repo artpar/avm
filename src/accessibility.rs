@@ -1,5 +1,5 @@
 use std::{
-    io::{BufRead, BufReader, Read},
+    io::{BufRead, BufReader, Read, Write},
     os::unix::net::UnixStream,
     path::Path,
     sync::Arc,
@@ -41,12 +41,19 @@ pub fn observe_accessibility(
         !duration.is_zero(),
         "accessibility observation duration must be positive"
     );
-    let stream = UnixStream::connect(socket_path).with_context(|| {
+    let mut stream = UnixStream::connect(socket_path).with_context(|| {
         format!(
             "connect guest accessibility sensor at {}",
             socket_path.display()
         )
     })?;
+    stream.set_write_timeout(Some(Duration::from_secs(1)))?;
+    stream
+        .write_all(b"{\"command\":\"observe\",\"protocolVersion\":1}\n")
+        .context("request guest accessibility snapshot")?;
+    stream
+        .flush()
+        .context("flush guest accessibility request")?;
     stream.set_read_timeout(Some(Duration::from_millis(250)))?;
     let mut reader = BufReader::new(stream);
     let deadline = Instant::now() + duration;
@@ -111,6 +118,14 @@ mod tests {
         let listener = UnixListener::bind(&socket).unwrap();
         let writer = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut request)
+                .unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&request).unwrap(),
+                serde_json::json!({"command": "observe", "protocolVersion": 1})
+            );
             writeln!(
                 stream,
                 "{}",
@@ -155,6 +170,14 @@ mod tests {
         let listener = UnixListener::bind(&socket).unwrap();
         let writer = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut request)
+                .unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&request).unwrap(),
+                serde_json::json!({"command": "observe", "protocolVersion": 1})
+            );
             writeln!(
                 stream,
                 "{}",

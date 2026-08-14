@@ -14,6 +14,8 @@ MAX_TEXT_CHARACTERS = 4096
 MAX_LINE_BYTES = 900_000
 
 output = None
+command_buffer = b""
+connected = False
 
 
 def source_timestamp():
@@ -24,22 +26,33 @@ def source_timestamp():
 
 
 def emit(kind, payload):
-    global output
+    global connected
     envelope = {
         "kind": kind,
         "sourceTimestamp": source_timestamp(),
         "payload": payload,
     }
-    encoded = json.dumps(envelope, separators=(",", ":"), ensure_ascii=False)
-    if len(encoded.encode("utf-8")) > MAX_LINE_BYTES:
+    encoded = json.dumps(envelope, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    if len(encoded) > MAX_LINE_BYTES:
         envelope["payload"] = {
             "error": "accessibility event exceeded guest size limit",
             "originalKind": kind,
         }
         envelope["kind"] = "accessibility.sensor.error"
-        encoded = json.dumps(envelope, separators=(",", ":"), ensure_ascii=False)
-    output.write(encoded + "\n")
-    output.flush()
+        encoded = json.dumps(envelope, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    if output is None or not connected:
+        return False
+    try:
+        remaining = memoryview(encoded + b"\n")
+        while remaining:
+            written = output.write(remaining)
+            if not written:
+                raise OSError("guest accessibility device accepted no data")
+            remaining = remaining[written:]
+        return True
+    except (BrokenPipeError, OSError):
+        connected = False
+        return False
 
 
 def safely(default, operation):
@@ -200,7 +213,7 @@ def emit_ready(heartbeat):
     emit(
         "accessibility.sensor.ready",
         {
-            "observerVersion": 1,
+            "observerVersion": 2,
             "desktopCount": pyatspi.Registry.getDesktopCount(),
             "desktopName": safely("", lambda: desktop.name),
             "pid": os.getpid(),
@@ -210,10 +223,31 @@ def emit_ready(heartbeat):
 
 
 def readiness_heartbeat():
-    try:
+    if connected:
         emit_ready(True)
-    except Exception:
-        os._exit(1)
+    return True
+
+
+def on_command(source, condition):
+    global command_buffer, connected
+    try:
+        incoming = os.read(source, 65536)
+    except BlockingIOError:
+        return True
+    except OSError:
+        connected = False
+        return True
+    if not incoming:
+        connected = False
+        return True
+    command_buffer += incoming
+    while b"\n" in command_buffer:
+        line, command_buffer = command_buffer.split(b"\n", 1)
+        command = safely({}, lambda: json.loads(line.decode("utf-8")))
+        if command.get("command") == "observe":
+            connected = True
+            emit_ready(False)
+            initial_snapshot()
     return True
 
 
@@ -235,9 +269,7 @@ def main():
     desktop = pyatspi.Registry.getDesktop(0)
     with open(BUS_READY_MARKER, "w", encoding="utf-8") as marker:
         marker.write("ready\n")
-    output = open(DEVICE, "w", buffering=1, encoding="utf-8")
-    emit_ready(False)
-    initial_snapshot()
+    output = open(DEVICE, "r+b", buffering=0)
     for event_type in (
         "object:property-change",
         "object:state-changed",
@@ -248,6 +280,7 @@ def main():
         "focus:",
     ):
         pyatspi.Registry.registerEventListener(on_event, event_type)
+    GLib.io_add_watch(output.fileno(), GLib.IO_IN, on_command)
     GLib.timeout_add_seconds(5, readiness_heartbeat)
     pyatspi.Registry.start()
 
