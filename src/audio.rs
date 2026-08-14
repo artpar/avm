@@ -1,14 +1,17 @@
 use std::{
     collections::BTreeMap,
+    io::Write,
     os::unix::net::UnixStream,
     path::Path,
+    path::PathBuf,
+    process::{Command, Stdio},
     sync::{Arc, Mutex},
     time::Duration,
 };
 
 use anyhow::{Context, Result};
-use serde::Serialize;
-use serde_json::json;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use uuid::Uuid;
 use zbus::{Connection, proxy, zvariant::Fd};
 
@@ -18,6 +21,8 @@ use crate::{
 };
 
 const MAX_PCM_BYTES_PER_STREAM: usize = 64 * 1024 * 1024;
+pub const DEFAULT_TRANSCRIPTION_PROMPT: &str = "Transcribe only intelligible speech in this PCM interval. Preserve uncertainty and do not infer missing words. Do not decide whether the software behavior is correct.";
+pub const DEFAULT_AUDIO_EVENT_PROMPT: &str = "Describe the audible events in this PCM interval, including silence, tones, clicks, alarms, music, or speech. Preserve uncertainty and do not decide whether the software behavior is correct.";
 
 #[proxy(default_service = "org.qemu", interface = "org.qemu.Display1.Audio")]
 trait QemuAudio {
@@ -195,6 +200,195 @@ pub struct AudioCaptureResult {
     pub retained_bytes: u64,
     pub truncated_stream_count: usize,
     pub protocol_errors: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioInterpretationKind {
+    Transcription,
+    AudioEvent,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandAudioAdapterConfig {
+    pub program: PathBuf,
+    #[serde(default)]
+    pub args: Vec<String>,
+    pub model: String,
+    pub model_version: String,
+    pub kind: AudioInterpretationKind,
+}
+
+impl CommandAudioAdapterConfig {
+    pub fn validate(&self) -> Result<()> {
+        anyhow::ensure!(
+            !self.program.as_os_str().is_empty(),
+            "audio adapter program must not be empty"
+        );
+        anyhow::ensure!(
+            !self.model.trim().is_empty(),
+            "audio adapter model must not be empty"
+        );
+        anyhow::ensure!(
+            !self.model_version.trim().is_empty(),
+            "audio adapter model version must not be empty"
+        );
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioInterpretationRequest {
+    pub protocol_version: u32,
+    pub model: String,
+    pub model_version: String,
+    pub kind: AudioInterpretationKind,
+    pub prompt: String,
+    pub raw_interval_event_id: Uuid,
+    pub artifact_ref: String,
+    pub artifact_path: PathBuf,
+    pub interval: Value,
+    pub format: Value,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct AudioAdapterResponse {
+    pub output: Value,
+}
+
+pub trait AudioAdapter {
+    fn model(&self) -> &str;
+    fn model_version(&self) -> &str;
+    fn kind(&self) -> AudioInterpretationKind;
+    fn interpret(&self, request: &AudioInterpretationRequest) -> Result<AudioAdapterResponse>;
+}
+
+pub struct CommandAudioAdapter {
+    config: CommandAudioAdapterConfig,
+}
+
+impl CommandAudioAdapter {
+    pub fn new(config: CommandAudioAdapterConfig) -> Result<Self> {
+        config.validate()?;
+        Ok(Self { config })
+    }
+}
+
+impl AudioAdapter for CommandAudioAdapter {
+    fn model(&self) -> &str {
+        &self.config.model
+    }
+
+    fn model_version(&self) -> &str {
+        &self.config.model_version
+    }
+
+    fn kind(&self) -> AudioInterpretationKind {
+        self.config.kind.clone()
+    }
+
+    fn interpret(&self, request: &AudioInterpretationRequest) -> Result<AudioAdapterResponse> {
+        let mut child = Command::new(&self.config.program)
+            .args(&self.config.args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .with_context(|| {
+                format!(
+                    "start audio adapter program {}",
+                    self.config.program.display()
+                )
+            })?;
+        child
+            .stdin
+            .take()
+            .context("audio adapter stdin was not piped")?
+            .write_all(&serde_json::to_vec(request)?)?;
+        let output = child.wait_with_output()?;
+        anyhow::ensure!(
+            output.status.success(),
+            "audio adapter exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+        serde_json::from_slice(&output.stdout).context("parse audio adapter JSON response")
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioInterpretation {
+    pub model: String,
+    pub model_version: String,
+    pub kind: AudioInterpretationKind,
+    pub prompt: String,
+    pub raw_interval_event_id: Uuid,
+    pub artifact_ref: String,
+    pub output: Value,
+}
+
+pub fn interpret_audio_event(
+    artifacts: &ArtifactStore,
+    raw_event: &RawEvent,
+    prompt: &str,
+    adapter: &dyn AudioAdapter,
+) -> Result<(RawEvent, AudioInterpretation)> {
+    anyhow::ensure!(
+        raw_event.kind == "audio.raw.interval",
+        "audio interpretation requires a raw audio interval event"
+    );
+    anyhow::ensure!(
+        raw_event.provenance == Provenance::Observed,
+        "raw audio interval must retain observed provenance"
+    );
+    anyhow::ensure!(!prompt.trim().is_empty(), "audio prompt must not be empty");
+    let artifact_ref = raw_event
+        .artifact_refs
+        .first()
+        .context("raw audio interval has no PCM artifact")?
+        .clone();
+    artifacts.read(&artifact_ref)?;
+    let request = AudioInterpretationRequest {
+        protocol_version: 1,
+        model: adapter.model().to_owned(),
+        model_version: adapter.model_version().to_owned(),
+        kind: adapter.kind(),
+        prompt: prompt.to_owned(),
+        raw_interval_event_id: raw_event.id,
+        artifact_path: artifacts.path(&artifact_ref)?,
+        artifact_ref: artifact_ref.clone(),
+        interval: json!({
+            "startNs": raw_event.payload.get("startNs"),
+            "endNs": raw_event.payload.get("endNs")
+        }),
+        format: raw_event
+            .payload
+            .get("format")
+            .cloned()
+            .context("raw audio interval has no PCM format")?,
+    };
+    let response = adapter.interpret(&request)?;
+    let interpretation = AudioInterpretation {
+        model: request.model,
+        model_version: request.model_version,
+        kind: request.kind,
+        prompt: request.prompt,
+        raw_interval_event_id: request.raw_interval_event_id,
+        artifact_ref: request.artifact_ref,
+        output: response.output,
+    };
+    let mut event = RawEvent::observed(
+        raw_event.session_id,
+        "perception",
+        "perception.audio.interpretation",
+        serde_json::to_value(&interpretation)?,
+    );
+    event.provenance = Provenance::ModelInterpreted;
+    event.artifact_refs.push(artifact_ref);
+    Ok((event, interpretation))
 }
 
 impl AudioCapture {
@@ -457,5 +651,57 @@ mod tests {
         assert_eq!(events[0].artifact_refs.len(), 1);
         assert_eq!(events[1].kind, "audio.waveform.metadata");
         assert_eq!(events[1].provenance, Provenance::Derived);
+    }
+
+    struct FakeAudioAdapter;
+
+    impl AudioAdapter for FakeAudioAdapter {
+        fn model(&self) -> &str {
+            "fixture/audio"
+        }
+
+        fn model_version(&self) -> &str {
+            "v1"
+        }
+
+        fn kind(&self) -> AudioInterpretationKind {
+            AudioInterpretationKind::AudioEvent
+        }
+
+        fn interpret(&self, request: &AudioInterpretationRequest) -> Result<AudioAdapterResponse> {
+            assert!(request.artifact_path.is_file());
+            Ok(AudioAdapterResponse {
+                output: json!({"event": "tone"}),
+            })
+        }
+    }
+
+    #[test]
+    fn keeps_optional_audio_interpretation_separate_from_raw_evidence() {
+        let temp = tempfile::tempdir().unwrap();
+        let artifacts = ArtifactStore::new(temp.path()).unwrap();
+        let artifact_ref = artifacts.put(&[0, 0, 255, 127]).unwrap();
+        let mut raw = RawEvent::observed(
+            Uuid::new_v4(),
+            "audio",
+            "audio.raw.interval",
+            json!({
+                "startNs": 100,
+                "endNs": 200,
+                "format": signed_16_format()
+            }),
+        );
+        raw.artifact_refs.push(artifact_ref.clone());
+        let (event, interpretation) = interpret_audio_event(
+            &artifacts,
+            &raw,
+            DEFAULT_AUDIO_EVENT_PROMPT,
+            &FakeAudioAdapter,
+        )
+        .unwrap();
+        assert_eq!(event.provenance, Provenance::ModelInterpreted);
+        assert_eq!(event.artifact_refs, vec![artifact_ref]);
+        assert_eq!(interpretation.output["event"], "tone");
+        assert!(event.payload.get("artifactPath").is_none());
     }
 }

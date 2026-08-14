@@ -6,6 +6,12 @@ use std::{
 #[cfg(target_os = "linux")]
 use std::time::Duration;
 
+#[cfg(target_os = "linux")]
+use avm::audio::{
+    AudioInterpretationKind, CommandAudioAdapter, CommandAudioAdapterConfig,
+    DEFAULT_AUDIO_EVENT_PROMPT, DEFAULT_TRANSCRIPTION_PROMPT, interpret_audio_event,
+};
+
 use anyhow::{Context, Result, bail, ensure};
 use avm::storage::ArtifactStore;
 use avm::{
@@ -356,6 +362,17 @@ enum Command {
         run: PathBuf,
         #[arg(long, default_value_t = 10_000)]
         duration_ms: u64,
+    },
+    #[cfg(target_os = "linux")]
+    AudioInterpret {
+        #[arg(long)]
+        run: PathBuf,
+        #[arg(long)]
+        adapter_config: PathBuf,
+        #[arg(long)]
+        audio_event_id: uuid::Uuid,
+        #[arg(long)]
+        prompt: Option<String>,
     },
     #[cfg(target_os = "linux")]
     Smoke {
@@ -811,6 +828,13 @@ async fn main() -> Result<()> {
         }
         #[cfg(target_os = "linux")]
         Command::AudioObserve { run, duration_ms } => audio_observe(&run, duration_ms).await?,
+        #[cfg(target_os = "linux")]
+        Command::AudioInterpret {
+            run,
+            adapter_config,
+            audio_event_id,
+            prompt,
+        } => audio_interpret(&run, &adapter_config, audio_event_id, prompt.as_deref())?,
         #[cfg(target_os = "linux")]
         Command::Smoke {
             run,
@@ -1615,6 +1639,46 @@ async fn audio_observe(run: &Path, duration_ms: u64) -> Result<()> {
             .await?;
     let result = capture.observe(Duration::from_millis(duration_ms)).await?;
     println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn audio_interpret(
+    run: &Path,
+    adapter_config_path: &Path,
+    audio_event_id: uuid::Uuid,
+    prompt: Option<&str>,
+) -> Result<()> {
+    let config = load_run(run)?;
+    let store = experience(&config)?;
+    let raw_event = store
+        .event(audio_event_id)?
+        .with_context(|| format!("audio event {audio_event_id} is not in the timeline"))?;
+    ensure!(
+        raw_event.session_id == config.id,
+        "audio event belongs to another run"
+    );
+    let adapter_config: CommandAudioAdapterConfig =
+        serde_json::from_slice(&std::fs::read(adapter_config_path).with_context(|| {
+            format!(
+                "read audio adapter configuration {}",
+                adapter_config_path.display()
+            )
+        })?)?;
+    let default_prompt = match adapter_config.kind {
+        AudioInterpretationKind::Transcription => DEFAULT_TRANSCRIPTION_PROMPT,
+        AudioInterpretationKind::AudioEvent => DEFAULT_AUDIO_EVENT_PROMPT,
+    };
+    let adapter = CommandAudioAdapter::new(adapter_config)?;
+    let artifacts = ArtifactStore::new(config.paths().artifacts)?;
+    let (event, interpretation) = interpret_audio_event(
+        &artifacts,
+        &raw_event,
+        prompt.unwrap_or(default_prompt),
+        &adapter,
+    )?;
+    record_canonical(&config, event)?;
+    println!("{}", serde_json::to_string_pretty(&interpretation)?);
     Ok(())
 }
 
