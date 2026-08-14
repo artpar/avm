@@ -71,13 +71,13 @@ Status meanings:
 | Host/guest CPU, memory, write bandwidth, processing/input latency, event/storage/model volume | Verified | `src/performance.rs`; performance tests; real paired GCE measurement summarized in `README.md` |
 | Balanced repeated A/B/C/D runner with fixed model/task/repository/snapshot/dependencies/resources and blind evaluation | Verified | `experiments/runner.mjs`, fixture eight-trial check, real-agent capability-plan check |
 | Complete time/tool/model/interaction/rework/failed-attempt measurement | Implemented | `experiments/agent-metrics.mjs`; Exec/App Server parser check; ordinary JSONL persistence and evaluator merge tests |
-| Valid controlled outcome experiment using the complete repaired rich stack | **Open** | The prior eight-trial run is historical only because both gated-rich browser calls failed. Rerun after commits `222093e`, `2957b7b`, and `a1b123f`; report the outcome even if negative. |
+| Valid controlled outcome experiment using the complete repaired rich stack | Verified | Accepted balanced run `/Users/artpar/workspace/code/avm-evidence/experiments/controlled-v1/run-5`; all seven rich browser calls succeeded; complete metrics and negative result reported in `docs/experiment-results.md` |
 
 ## Completion gates
 
 | Requirement | Status | Required proof |
 | --- | --- | --- |
 | One coding agent completes the entire task→edit→guest run→GUI action→temporal revisit→richer query→browser/runtime correlation→diagnosis→fix→independent evidence→repeat→corrected observation loop | **Open** | Dedicated agent event stream, canonical VM timeline, published fingerprints, independent evaluator result, and before/after artifacts from one successful loop |
-| Experiment shows whether the environment improves outcomes versus the same model without it | **Open** | New balanced A/B/C/D result set using the successful 9223 CDP transport and complete operational metrics |
+| Experiment shows whether the environment improves outcomes versus the same model without it | Verified | Run 5 found zero rich-perception functional-defect main effect with substantially higher time/tool/token cost; see `docs/experiment-results.md` |
 
-The project must remain described as incomplete until both open gates have immutable evidence and pass their integrity checks.
+The project must remain described as incomplete until the remaining end-to-end agent-loop gate has immutable evidence and passes its integrity checks.
