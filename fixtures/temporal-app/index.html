@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Temporal Perception Fixture</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body { margin: 0; min-height: 100%; background: #f5f3ee; color: #20242a; }
+      body { font: 18px/1.4 system-ui, sans-serif; padding: 32px; }
+      h1 { margin: 0 0 8px; font-size: 28px; }
+      p { margin: 0; color: #59616d; }
+      .zones { display: flex; gap: 24px; margin-top: 36px; }
+      .zone {
+        position: relative;
+        width: 176px;
+        height: 72px;
+        border: 2px dashed #9ca3af;
+        border-radius: 8px;
+        display: grid;
+        place-items: center;
+        user-select: none;
+      }
+      .hit {
+        position: absolute;
+        inset: 0;
+        background: transparent;
+      }
+      .stage {
+        position: relative;
+        width: 760px;
+        height: 260px;
+        margin-top: 36px;
+        overflow: hidden;
+        background: #fff;
+        border: 1px solid #d1d5db;
+      }
+      .target {
+        position: absolute;
+        width: 96px;
+        height: 72px;
+        top: 48px;
+      }
+      #delayed-target { left: 48px; display: none; background: #2563eb; }
+      #flicker-target { left: 248px; background: #15803d; }
+      #jump-target { left: 448px; background: #7c3aed; }
+    </style>
+  </head>
+  <body>
+    <h1>Temporal Perception Fixture</h1>
+    <p>Each zone produces a different raw display sequence.</p>
+    <div class="zones">
+      <div class="zone"><span>Sequence 1</span><div class="hit" id="delay-hit"></div></div>
+      <div class="zone"><span>Sequence 2</span><div class="hit" id="flicker-hit"></div></div>
+      <div class="zone"><span>Sequence 3</span><div class="hit" id="jump-hit"></div></div>
+    </div>
+    <div class="stage">
+      <div class="target" id="delayed-target"></div>
+      <div class="target" id="flicker-target"></div>
+      <div class="target" id="jump-target"></div>
+    </div>
+    <script>
+      const delayedTarget = document.querySelector("#delayed-target");
+      const flickerTarget = document.querySelector("#flicker-target");
+      const jumpTarget = document.querySelector("#jump-target");
+
+      document.querySelector("#delay-hit").addEventListener("click", () => {
+        delayedTarget.style.display = "none";
+        setTimeout(() => { delayedTarget.style.display = "block"; }, 320);
+      });
+
+      document.querySelector("#flicker-hit").addEventListener("click", () => {
+        const colors = ["#dc2626", "#15803d", "#dc2626", "#15803d"];
+        colors.forEach((color, index) => {
+          setTimeout(() => { flickerTarget.style.background = color; }, 50 + index * 45);
+        });
+      });
+
+      document.querySelector("#jump-hit").addEventListener("click", () => {
+        jumpTarget.style.transform = "none";
+        setTimeout(() => { jumpTarget.style.transform = "translateX(160px)"; }, 50);
+      });
+    </script>
+  </body>
+</html>
