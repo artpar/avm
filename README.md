@@ -32,6 +32,12 @@ Implemented now:
 
 The supported deployment keeps Codex local. Use authenticated `gcloud compute ssh` with an explicit project, zone, and instance as the control channel. AVM's `remote-channel-create` command records that channel, and `remote-publish` transfers a fingerprinted candidate through it. Guest SSH and Chromium CDP are tunneled through the GCE host when required. Device-code authorization on the VM is neither required nor recommended for this architecture.
 
+In evaluator runs, candidate application processes execute inside the nested
+guest against the virtiofs-mounted `/workspace`. They must not run as the GCE
+user that owns supervisor state. Evaluator-private proxies may run on the host
+and reach a guest service through a scoped SSH tunnel; their files are never
+mounted into the guest.
+
 The run configuration is boot-bound: after the outer GCE host reboots, create a new run instead of appending events to a run associated with the previous host boot. Stop nested QEMU and the outer GCE instance when they are not in use.
 
 Build the guest on the Linux host as described in [vm/image/README.md](vm/image/README.md), then:
