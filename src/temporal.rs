@@ -78,8 +78,9 @@ pub struct PixelBounds {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DisplayUpdateFact {
+pub struct DisplayChangeFact {
     pub event_id: Uuid,
+    pub event_kind: String,
     pub host_monotonic_ns: u64,
     pub announced_rect: PixelBounds,
     pub changed_bounds: Option<PixelBounds>,
@@ -107,7 +108,7 @@ pub struct TemporalAnalysis {
     pub start_ns: u64,
     pub end_ns: u64,
     pub config: TemporalConfig,
-    pub display_update_facts: Vec<DisplayUpdateFact>,
+    pub display_change_facts: Vec<DisplayChangeFact>,
     pub observations: Vec<TemporalObservation>,
 }
 
@@ -161,6 +162,30 @@ pub fn analyze_temporal(
                     u32_field(event, "pixmanFormat")?,
                     &bytes,
                 )?;
+                if event.host_monotonic_ns >= start_ns
+                    && frame.as_ref().is_some_and(|before| {
+                        before.width() == next.width()
+                            && before.height() == next.height()
+                            && before.format() == next.format()
+                    })
+                {
+                    let before = frame
+                        .as_ref()
+                        .expect("compatible prior frame checked above");
+                    facts.push(display_change_fact(
+                        event,
+                        before,
+                        &next,
+                        PixelBounds {
+                            x: 0,
+                            y: 0,
+                            width: next.width(),
+                            height: next.height(),
+                        },
+                        &config,
+                        &mut observations,
+                    )?);
+                }
                 states.push(FrameState {
                     event_id: event.id,
                     timestamp: event.host_monotonic_ns,
@@ -196,46 +221,14 @@ pub fn analyze_temporal(
                 if event.host_monotonic_ns < start_ns {
                     continue;
                 }
-                let difference = pixel_difference(&before, current)?;
-                let announced_pixels = u64::from(rect.width) * u64::from(rect.height);
-                let screen_pixels = u64::from(current.width()) * u64::from(current.height());
-                let fact = DisplayUpdateFact {
-                    event_id: event.id,
-                    host_monotonic_ns: event.host_monotonic_ns,
-                    announced_rect: rect,
-                    changed_bounds: difference.bounds,
-                    changed_pixels: difference.changed_pixels,
-                    announced_pixels,
-                    screen_pixels,
-                    changed_ratio_in_announced_rect: ratio(
-                        difference.changed_pixels,
-                        announced_pixels,
-                    ),
-                    changed_ratio_of_screen: ratio(difference.changed_pixels, screen_pixels),
-                    resulting_frame_sha256: hash,
-                };
-                if fact.changed_ratio_of_screen >= config.large_changed_screen_ratio {
-                    observations.push(observation(
-                        "display.large_region_changed",
-                        event.host_monotonic_ns,
-                        event.host_monotonic_ns,
-                        vec![event.id],
-                        json!({
-                            "changedPixels": fact.changed_pixels,
-                            "screenPixels": fact.screen_pixels,
-                            "changedRatioOfScreen": fact.changed_ratio_of_screen,
-                            "changedBounds": fact.changed_bounds,
-                        }),
-                    ));
-                }
-                observations.extend(motion_observations(
+                facts.push(display_change_fact(
                     event,
                     &before,
                     current,
-                    &difference.components,
+                    rect,
                     &config,
-                ));
-                facts.push(fact);
+                    &mut observations,
+                )?);
             }
             _ => {}
         }
@@ -259,14 +252,14 @@ pub fn analyze_temporal(
         start_ns,
         end_ns,
         config,
-        display_update_facts: facts,
+        display_change_facts: facts,
         observations,
     })
 }
 
 fn derive_action_responses(
     events: &[&RawEvent],
-    facts: &[DisplayUpdateFact],
+    facts: &[DisplayChangeFact],
     start_ns: u64,
     end_ns: u64,
     config: &TemporalConfig,
@@ -322,20 +315,27 @@ fn derive_action_responses(
 }
 
 fn derive_repeated_regions(
-    facts: &[DisplayUpdateFact],
+    facts: &[DisplayChangeFact],
     config: &TemporalConfig,
     observations: &mut Vec<TemporalObservation>,
 ) {
+    let facts = facts
+        .iter()
+        .filter(|fact| fact.changed_pixels > 0)
+        .collect::<Vec<_>>();
     let window_ns = config.repeated_region_window_ms.saturating_mul(1_000_000);
     let mut index = 0;
     while index < facts.len() {
         let mut end = index + 1;
-        let mut union = facts[index].announced_rect;
+        let mut union = activity_region(facts[index]);
         while end < facts.len()
-            && facts[end].host_monotonic_ns - facts[end - 1].host_monotonic_ns <= window_ns
-            && intersection_over_union(union, facts[end].announced_rect) >= 0.50
+            && facts[end]
+                .host_monotonic_ns
+                .saturating_sub(facts[end - 1].host_monotonic_ns)
+                <= window_ns
+            && intersection_over_union(union, activity_region(facts[end])) >= 0.50
         {
-            union = union_bounds(union, facts[end].announced_rect);
+            union = union_bounds(union, activity_region(facts[end]));
             end += 1;
         }
         if end - index >= config.repeated_region_min_updates {
@@ -363,7 +363,16 @@ fn derive_state_reversions(
     observations: &mut Vec<TemporalObservation>,
 ) {
     let window_ns = config.flicker_window_ms.saturating_mul(1_000_000);
-    for triple in states.windows(3) {
+    let mut distinct_states = Vec::new();
+    for state in states {
+        if distinct_states
+            .last()
+            .is_none_or(|previous: &&FrameState| previous.hash != state.hash)
+        {
+            distinct_states.push(state);
+        }
+    }
+    for triple in distinct_states.windows(3) {
         let [before, transient, restored] = triple else {
             unreachable!()
         };
@@ -443,7 +452,7 @@ fn derive_multiple_states(
 
 fn derive_network_display_order(
     events: &[&RawEvent],
-    facts: &[DisplayUpdateFact],
+    facts: &[DisplayChangeFact],
     start_ns: u64,
     config: &TemporalConfig,
     observations: &mut Vec<TemporalObservation>,
@@ -529,6 +538,54 @@ fn motion_observations(
         .collect()
 }
 
+fn display_change_fact(
+    event: &RawEvent,
+    before: &Framebuffer,
+    after: &Framebuffer,
+    announced_rect: PixelBounds,
+    config: &TemporalConfig,
+    observations: &mut Vec<TemporalObservation>,
+) -> Result<DisplayChangeFact> {
+    let difference = pixel_difference(before, after)?;
+    let announced_pixels = u64::from(announced_rect.width) * u64::from(announced_rect.height);
+    let screen_pixels = u64::from(after.width()) * u64::from(after.height());
+    let fact = DisplayChangeFact {
+        event_id: event.id,
+        event_kind: event.kind.clone(),
+        host_monotonic_ns: event.host_monotonic_ns,
+        announced_rect,
+        changed_bounds: difference.bounds,
+        changed_pixels: difference.changed_pixels,
+        announced_pixels,
+        screen_pixels,
+        changed_ratio_in_announced_rect: ratio(difference.changed_pixels, announced_pixels),
+        changed_ratio_of_screen: ratio(difference.changed_pixels, screen_pixels),
+        resulting_frame_sha256: after.sha256(),
+    };
+    if fact.changed_ratio_of_screen >= config.large_changed_screen_ratio {
+        observations.push(observation(
+            "display.large_region_changed",
+            event.host_monotonic_ns,
+            event.host_monotonic_ns,
+            vec![event.id],
+            json!({
+                "changedPixels": fact.changed_pixels,
+                "screenPixels": fact.screen_pixels,
+                "changedRatioOfScreen": fact.changed_ratio_of_screen,
+                "changedBounds": fact.changed_bounds,
+            }),
+        ));
+    }
+    observations.extend(motion_observations(
+        event,
+        before,
+        after,
+        &difference.components,
+        config,
+    ));
+    Ok(fact)
+}
+
 fn pixel_difference(before: &Framebuffer, after: &Framebuffer) -> Result<Difference> {
     ensure!(
         before.width() == after.width() && before.height() == after.height(),
@@ -554,7 +611,7 @@ fn pixel_difference(before: &Framebuffer, after: &Framebuffer) -> Result<Differe
             }
         }
     }
-    let bounds = (changed_pixels > 0).then_some(PixelBounds {
+    let bounds = (changed_pixels > 0).then(|| PixelBounds {
         x: minimum_x,
         y: minimum_y,
         width: maximum_x - minimum_x + 1,
@@ -566,6 +623,14 @@ fn pixel_difference(before: &Framebuffer, after: &Framebuffer) -> Result<Differe
         changed_pixels,
         components,
     })
+}
+
+fn activity_region(fact: &DisplayChangeFact) -> PixelBounds {
+    if fact.event_kind == "display.update" {
+        fact.announced_rect
+    } else {
+        fact.changed_bounds.unwrap_or(fact.announced_rect)
+    }
 }
 
 fn connected_components(mask: &[bool], width: usize, height: usize) -> Vec<Component> {
@@ -851,5 +916,44 @@ mod tests {
         assert!(kinds.contains("input.multiple_visual_states_while_pointer_down"));
         assert!(kinds.contains("input.pointer_move_without_display_response"));
         assert!(kinds.contains("display.visual_response_after_network_response"));
+    }
+
+    #[test]
+    fn diffs_consecutive_full_scanouts_and_ignores_duplicate_frames() {
+        let temp = tempfile::tempdir().unwrap();
+        let artifacts = ArtifactStore::new(temp.path()).unwrap();
+        let session = Uuid::new_v4();
+        let black = vec![0_u8; 40 * 10 * 4];
+        let mut blue = black.clone();
+        for y in 2..6 {
+            for x in 4..12 {
+                let offset = (y * 40 + x) * 4;
+                blue[offset..offset + 4].copy_from_slice(&[255, 0, 0, 0]);
+            }
+        }
+        let initial = scanout(session, &artifacts, &black);
+        let mut duplicate = scanout(session, &artifacts, &black);
+        duplicate.host_monotonic_ns = 100_000_000;
+        let input = RawEvent::observed_at(session, 1_000_000, "input", "pointer.up", json!({}));
+        let mut changed = scanout(session, &artifacts, &blue);
+        changed.host_monotonic_ns = 321_000_000;
+        let analysis = analyze_temporal(
+            &[initial, input, duplicate, changed],
+            &artifacts,
+            0,
+            1_100_000_000,
+            TemporalConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(analysis.display_change_facts.len(), 2);
+        assert_eq!(analysis.display_change_facts[0].changed_pixels, 0);
+        assert_eq!(analysis.display_change_facts[1].changed_pixels, 32);
+        assert_eq!(
+            analysis.display_change_facts[1].event_kind,
+            "display.scanout"
+        );
+        assert!(analysis.observations.iter().any(|item| {
+            item.kind == "input.visual_response" && item.payload["delayed"] == true
+        }));
     }
 }
