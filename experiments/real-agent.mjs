@@ -5,7 +5,7 @@ import { metricsFromAppEvents, metricsFromExecEvents } from './agent-metrics.mjs
 
 const [configPath, condition, workspaceArgument, trialRootArgument, taskPath, modeFlag] = process.argv.slice(2);
 if (!configPath || !['A', 'B', 'C', 'D'].includes(condition) || !workspaceArgument || !trialRootArgument || !taskPath) {
-  throw new Error('usage: node real-agent.mjs CONFIG A|B|C|D WORKSPACE TRIAL_ROOT TASK [--dry-run|--preflight]');
+  throw new Error('usage: node real-agent.mjs CONFIG A|B|C|D WORKSPACE TRIAL_ROOT TASK [--dry-run|--preflight|--final-demo]');
 }
 const config = JSON.parse(await readFile(configPath, 'utf8'));
 const workspace = resolve(workspaceArgument);
@@ -15,7 +15,9 @@ const rich = condition === 'B' || condition === 'C';
 const gated = condition === 'B' || condition === 'D';
 const dryRun = modeFlag === '--dry-run';
 const preflight = modeFlag === '--preflight';
-if (modeFlag && !dryRun && !preflight) throw new Error(`unknown mode ${modeFlag}`);
+const finalDemo = modeFlag === '--final-demo';
+if (modeFlag && !dryRun && !preflight && !finalDemo) throw new Error(`unknown mode ${modeFlag}`);
+if (finalDemo && condition !== 'C') throw new Error('--final-demo requires rich, ungated condition C');
 validateConfig(config);
 await mkdir(trialRoot, { recursive: true });
 
@@ -70,6 +72,7 @@ try {
     must(await run(config.localAvm, ['evidence-command', '--policy', agent.policy, '--cwd', workspace, '--expected-exit-code', '0', 'npm', 'run', 'check'], workspace, config.agentWallTimeMs));
     if (rich) must(await run(config.localAvm, ['remote-publish', '--channel', remote.channel], workspace, config.agentWallTimeMs));
   }
+  if (finalDemo) await captureFinalDemoEvidence(remote);
   const usage = await agentUsage(agent);
   const productInteractions = remote ? await recordedInteractions(remote) : 0;
   const metrics = {
@@ -142,6 +145,17 @@ async function recordedInteractions(remoteState) {
     const value = JSON.parse(history.stdout);
     return value.events.filter(event => event.kind !== 'input.action.completed').length;
   } catch { return null; }
+}
+
+async function captureFinalDemoEvidence(remoteState) {
+  const history = must(await gcloudAvm([
+    'history', '--run', remoteState.run,
+    '--source', 'input', '--source', 'browser', '--source', 'network',
+    '--source', 'console', '--source', 'runtime', '--source', 'evidence',
+    '--source', 'repository', '--source', 'agent',
+  ]));
+  JSON.parse(history.stdout);
+  await writeFile(join(trialRoot, 'remote-history.json'), history.stdout.endsWith('\n') ? history.stdout : `${history.stdout}\n`);
 }
 
 async function prepareRemote() {
