@@ -12,7 +12,7 @@ use avm::audio::{
     DEFAULT_AUDIO_EVENT_PROMPT, DEFAULT_TRANSCRIPTION_PROMPT, interpret_audio_event,
 };
 #[cfg(target_os = "linux")]
-use avm::performance::{ProcessSnapshot, ResourceMeasurement};
+use avm::performance::{ProcessSnapshot, ResourceMeasurement, tree_usage};
 #[cfg(target_os = "linux")]
 use avm::qmp::QmpClient;
 
@@ -30,7 +30,7 @@ use avm::{
     },
     event::{EventSink, Provenance, RawEvent, monotonic_ns},
     experience::ExperienceStore,
-    performance::{build_report, tree_usage},
+    performance::build_report,
     policy::{
         BrowserEvidenceOptions, DevelopmentDeclarationInput, DiagnosisPlanInput,
         EvidenceCommandOptions, EvidenceStore, PolicyConfig, PolicyPhase, PolicyState,
