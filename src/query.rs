@@ -47,6 +47,12 @@ pub enum ExperienceQuery {
         #[serde(default = "default_frame_limit")]
         max_frames: usize,
     },
+    BrowserElementUnderPointer {
+        event_id: Uuid,
+    },
+    LastDialog {
+        text: Option<String>,
+    },
 }
 
 fn default_before_ms() -> u64 {
@@ -122,6 +128,10 @@ pub fn execute_query(
             *after_ms,
             *max_frames,
         ),
+        ExperienceQuery::BrowserElementUnderPointer { event_id } => {
+            browser_element_under_pointer(store, query.clone(), *event_id)
+        }
+        ExperienceQuery::LastDialog { text } => last_dialog(store, query.clone(), text.as_deref()),
     }
 }
 
@@ -345,6 +355,358 @@ fn before_console_exception(
     )
 }
 
+fn browser_element_under_pointer(
+    store: &ExperienceStore,
+    query: ExperienceQuery,
+    event_id: Uuid,
+) -> Result<ExperienceQueryResult> {
+    let input = required_event(store, event_id)?;
+    ensure!(
+        matches!(
+            input.kind.as_str(),
+            "pointer.move" | "pointer.down" | "pointer.up"
+        ),
+        "selected event is not a pointer event"
+    );
+    let display_x = numeric_field(&input.payload, "x")?;
+    let display_y = numeric_field(&input.payload, "y")?;
+    let all = store.history(None, None, &[])?;
+    let mut correlations = all
+        .iter()
+        .filter(|event| event.kind == "browser.coordinate_correlation")
+        .filter_map(|correlation| {
+            let snapshot_id = correlation
+                .payload
+                .get("browserSnapshotEventId")
+                .and_then(Value::as_str)
+                .and_then(|id| Uuid::parse_str(id).ok())?;
+            let snapshot = all.iter().find(|event| event.id == snapshot_id)?;
+            Some((
+                snapshot.host_monotonic_ns.abs_diff(input.host_monotonic_ns),
+                correlation,
+                snapshot,
+            ))
+        })
+        .collect::<Vec<_>>();
+    correlations.sort_by_key(|(distance, correlation, _)| (*distance, correlation.id));
+    let (distance_ns, correlation, snapshot) = correlations
+        .first()
+        .copied()
+        .context("timeline contains no browser snapshot with framebuffer correlation")?;
+    let mapping = correlation
+        .payload
+        .get("correlation")
+        .context("browser correlation event has no correlation payload")?;
+    let origin_x = numeric_field(mapping, "displayX")?;
+    let origin_y = numeric_field(mapping, "displayY")?;
+    let viewport_width = numeric_field(mapping, "viewportWidth")?;
+    let viewport_height = numeric_field(mapping, "viewportHeight")?;
+    ensure!(
+        display_x >= origin_x && display_y >= origin_y,
+        "pointer is outside the correlated browser viewport"
+    );
+    let inner_width = snapshot
+        .payload
+        .pointer("/state/windowMetrics/innerWidth")
+        .and_then(Value::as_f64)
+        .unwrap_or(viewport_width);
+    let inner_height = snapshot
+        .payload
+        .pointer("/state/windowMetrics/innerHeight")
+        .and_then(Value::as_f64)
+        .unwrap_or(viewport_height);
+    ensure!(
+        viewport_width > 0.0 && viewport_height > 0.0,
+        "correlated browser viewport is empty"
+    );
+    let viewport_x = (display_x - origin_x) * inner_width / viewport_width;
+    let viewport_y = (display_y - origin_y) * inner_height / viewport_height;
+    let element = hit_test_snapshot(snapshot, viewport_x, viewport_y)?;
+    let interval = QueryInterval {
+        start_ns: snapshot.host_monotonic_ns.min(input.host_monotonic_ns),
+        end_ns: snapshot.host_monotonic_ns.max(input.host_monotonic_ns),
+    };
+    let events = vec![snapshot.clone(), correlation.clone(), input.clone()];
+    let frames = frames_at(store, &[input.host_monotonic_ns], 1)?;
+    build_result(
+        query,
+        json!({
+            "type": "browser_snapshot_hit_test",
+            "pointerEventId": input.id,
+            "browserSnapshotEventId": snapshot.id,
+            "coordinateCorrelationEventId": correlation.id,
+            "snapshotDistanceNs": distance_ns,
+            "displayPoint": {"x": display_x, "y": display_y},
+            "viewportCssPoint": {"x": viewport_x, "y": viewport_y},
+            "element": element,
+            "limitation": "element identity is derived from the nearest correlated snapshot, not a live DOM hit-test at input dispatch time",
+        }),
+        interval,
+        events,
+        frames,
+    )
+}
+
+fn last_dialog(
+    store: &ExperienceStore,
+    query: ExperienceQuery,
+    requested_text: Option<&str>,
+) -> Result<ExperienceQueryResult> {
+    let all = store.history(None, None, &[])?;
+    let (snapshot, dialog) = all
+        .iter()
+        .rev()
+        .filter(|event| event.kind == "browser.page.snapshot")
+        .find_map(|snapshot| {
+            accessibility_dialog(snapshot, requested_text).map(|dialog| (snapshot, dialog))
+        })
+        .context("no matching dialog appears in a browser accessibility snapshot")?;
+    let down = all.iter().rev().find(|event| {
+        event.kind == "pointer.down" && event.host_monotonic_ns <= snapshot.host_monotonic_ns
+    });
+    let start_ns = down
+        .map(|event| event.host_monotonic_ns)
+        .unwrap_or(snapshot.host_monotonic_ns);
+    let interval = QueryInterval {
+        start_ns,
+        end_ns: snapshot.host_monotonic_ns,
+    };
+    let events = store.history(Some(interval.start_ns), Some(interval.end_ns), &[])?;
+    let frames = replay_frames(store, &interval, 12)?;
+    build_result(
+        query,
+        json!({
+            "type": "last_accessibility_dialog_interaction",
+            "browserSnapshotEventId": snapshot.id,
+            "precedingPointerDownEventId": down.map(|event| event.id),
+            "dialog": dialog,
+            "requestedText": requested_text,
+        }),
+        interval,
+        events,
+        frames,
+    )
+}
+
+fn hit_test_snapshot(snapshot: &RawEvent, viewport_x: f64, viewport_y: f64) -> Result<Value> {
+    let strings = snapshot
+        .payload
+        .pointer("/dom/strings")
+        .and_then(Value::as_array)
+        .context("browser snapshot has no DOM string table")?;
+    let documents = snapshot
+        .payload
+        .pointer("/dom/documents")
+        .and_then(Value::as_array)
+        .context("browser snapshot has no DOM documents")?;
+    let mut candidates = Vec::new();
+    for (document_index, document) in documents.iter().enumerate() {
+        let scroll_x = document
+            .get("scrollOffsetX")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        let scroll_y = document
+            .get("scrollOffsetY")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        let document_x = viewport_x + scroll_x;
+        let document_y = viewport_y + scroll_y;
+        let layout = document
+            .get("layout")
+            .context("DOM document has no layout table")?;
+        let node_indexes = value_array(layout, "nodeIndex")?;
+        let bounds = value_array(layout, "bounds")?;
+        let styles = value_array(layout, "styles")?;
+        let paint_orders = layout.get("paintOrders").and_then(Value::as_array);
+        let nodes = document
+            .get("nodes")
+            .context("DOM document has no node table")?;
+        for (layout_index, bounds_value) in bounds.iter().enumerate() {
+            let Some(rect) = rectangle(bounds_value) else {
+                continue;
+            };
+            if rect[2] <= 0.0
+                || rect[3] <= 0.0
+                || document_x < rect[0]
+                || document_y < rect[1]
+                || document_x > rect[0] + rect[2]
+                || document_y > rect[1] + rect[3]
+            {
+                continue;
+            }
+            let Some(node_index) = node_indexes
+                .get(layout_index)
+                .and_then(Value::as_u64)
+                .map(|index| index as usize)
+            else {
+                continue;
+            };
+            if indexed_u64(nodes, "nodeType", node_index) != Some(1)
+                || !visible_style(styles.get(layout_index), strings)
+            {
+                continue;
+            }
+            let paint_order = paint_orders
+                .and_then(|orders| orders.get(layout_index))
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            candidates.push((
+                paint_order,
+                rect[2] * rect[3],
+                document_index,
+                node_index,
+                rect,
+                nodes,
+            ));
+        }
+    }
+    candidates.sort_by(|left, right| {
+        right
+            .0
+            .cmp(&left.0)
+            .then_with(|| left.1.total_cmp(&right.1))
+            .then_with(|| left.2.cmp(&right.2))
+            .then_with(|| left.3.cmp(&right.3))
+    });
+    let (paint_order, _, document_index, node_index, bounds, nodes) = candidates
+        .first()
+        .context("no visible DOM element contains the correlated pointer point")?;
+    let backend_node_id = indexed_u64(nodes, "backendNodeId", *node_index);
+    let node_name = indexed_string(nodes, "nodeName", *node_index, strings);
+    let attributes = indexed_attributes(nodes, *node_index, strings);
+    let accessibility = backend_node_id.and_then(|backend_id| {
+        snapshot
+            .payload
+            .pointer("/accessibility/nodes")
+            .and_then(Value::as_array)
+            .and_then(|nodes| {
+                nodes.iter().find(|node| {
+                    node.get("backendDOMNodeId").and_then(Value::as_u64) == Some(backend_id)
+                })
+            })
+            .map(|node| {
+                json!({
+                    "role": node.pointer("/role/value"),
+                    "name": node.pointer("/name/value"),
+                })
+            })
+    });
+    Ok(json!({
+        "documentIndex": document_index,
+        "nodeIndex": node_index,
+        "backendNodeId": backend_node_id,
+        "nodeName": node_name,
+        "attributes": attributes,
+        "bounds": {"x": bounds[0], "y": bounds[1], "width": bounds[2], "height": bounds[3]},
+        "paintOrder": paint_order,
+        "accessibility": accessibility,
+    }))
+}
+
+fn accessibility_dialog(snapshot: &RawEvent, requested_text: Option<&str>) -> Option<Value> {
+    snapshot
+        .payload
+        .pointer("/accessibility/nodes")?
+        .as_array()?
+        .iter()
+        .find_map(|node| {
+            let role = node.pointer("/role/value")?.as_str()?;
+            if !matches!(role, "dialog" | "alertdialog") {
+                return None;
+            }
+            let name = node
+                .pointer("/name/value")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if requested_text.is_some_and(|text| !name.contains(text)) {
+                return None;
+            }
+            Some(json!({
+                "role": role,
+                "name": name,
+                "backendNodeId": node.get("backendDOMNodeId"),
+            }))
+        })
+}
+
+fn value_array<'a>(value: &'a Value, field: &str) -> Result<&'a Vec<Value>> {
+    value
+        .get(field)
+        .and_then(Value::as_array)
+        .with_context(|| format!("DOM layout has no {field} array"))
+}
+
+fn rectangle(value: &Value) -> Option<[f64; 4]> {
+    let values = value.as_array()?;
+    Some([
+        values.first()?.as_f64()?,
+        values.get(1)?.as_f64()?,
+        values.get(2)?.as_f64()?,
+        values.get(3)?.as_f64()?,
+    ])
+}
+
+fn visible_style(style: Option<&Value>, strings: &[Value]) -> bool {
+    let Some(indexes) = style.and_then(Value::as_array) else {
+        return true;
+    };
+    let values = indexes
+        .iter()
+        .filter_map(Value::as_u64)
+        .filter_map(|index| strings.get(index as usize))
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    values.first().is_none_or(|value| *value != "none")
+        && values.get(1).is_none_or(|value| *value != "hidden")
+        && values.get(2).is_none_or(|value| *value != "0")
+        && values.get(3).is_none_or(|value| *value != "none")
+}
+
+fn indexed_u64(nodes: &Value, field: &str, index: usize) -> Option<u64> {
+    nodes.get(field)?.as_array()?.get(index)?.as_u64()
+}
+
+fn indexed_string(nodes: &Value, field: &str, index: usize, strings: &[Value]) -> Option<String> {
+    let string_index = indexed_u64(nodes, field, index)? as usize;
+    strings.get(string_index)?.as_str().map(ToOwned::to_owned)
+}
+
+fn indexed_attributes(nodes: &Value, index: usize, strings: &[Value]) -> Value {
+    let indexes = nodes
+        .get("attributes")
+        .and_then(Value::as_array)
+        .and_then(|attributes| attributes.get(index))
+        .and_then(Value::as_array);
+    let mut object = serde_json::Map::new();
+    if let Some(indexes) = indexes {
+        for pair in indexes.chunks(2) {
+            let Some(name) = pair
+                .first()
+                .and_then(Value::as_u64)
+                .and_then(|index| strings.get(index as usize))
+                .and_then(Value::as_str)
+            else {
+                continue;
+            };
+            let value = pair
+                .get(1)
+                .and_then(Value::as_u64)
+                .and_then(|index| strings.get(index as usize))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            object.insert(name.to_owned(), Value::String(value.to_owned()));
+        }
+    }
+    Value::Object(object)
+}
+
+fn numeric_field(value: &Value, field: &str) -> Result<f64> {
+    value
+        .get(field)
+        .and_then(Value::as_f64)
+        .with_context(|| format!("payload has no numeric {field}"))
+}
+
 fn required_event(store: &ExperienceStore, event_id: Uuid) -> Result<RawEvent> {
     store
         .event(event_id)?
@@ -503,6 +865,62 @@ mod tests {
             event.artifact_refs.push(artifacts.put(bytes).unwrap());
             timeline.record(event).unwrap();
         }
+        let mut browser_snapshot = RawEvent::observed_at(
+            session,
+            15,
+            "browser",
+            "browser.page.snapshot",
+            json!({
+                "state": {"windowMetrics": {"innerWidth": 100, "innerHeight": 100}},
+                "dom": {
+                    "strings": ["#document", "HTML", "BODY", "BUTTON", "id", "save", "block", "visible", "1", "auto"],
+                    "documents": [{
+                        "scrollOffsetX": 0,
+                        "scrollOffsetY": 0,
+                        "nodes": {
+                            "parentIndex": [-1, 0, 1, 2],
+                            "nodeType": [9, 1, 1, 1],
+                            "nodeName": [0, 1, 2, 3],
+                            "backendNodeId": [1, 2, 3, 4],
+                            "attributes": [[], [], [], [4, 5]]
+                        },
+                        "layout": {
+                            "nodeIndex": [1, 2, 3],
+                            "bounds": [[0, 0, 100, 100], [0, 0, 100, 100], [0, 0, 20, 20]],
+                            "styles": [[6, 7, 8, 9], [6, 7, 8, 9], [6, 7, 8, 9]],
+                            "paintOrders": [0, 1, 2]
+                        }
+                    }]
+                },
+                "accessibility": {"nodes": [{
+                    "backendDOMNodeId": 4,
+                    "role": {"value": "button"},
+                    "name": {"value": "Save"}
+                }]}
+            }),
+        );
+        browser_snapshot
+            .artifact_refs
+            .push(artifacts.put(b"browser viewport fixture").unwrap());
+        let browser_snapshot_id = browser_snapshot.id;
+        timeline.record(browser_snapshot).unwrap();
+        let mut correlation = RawEvent::observed_at(
+            session,
+            18,
+            "browser",
+            "browser.coordinate_correlation",
+            json!({
+                "browserSnapshotEventId": browser_snapshot_id,
+                "correlation": {
+                    "displayX": 0,
+                    "displayY": 0,
+                    "viewportWidth": 100,
+                    "viewportHeight": 100
+                }
+            }),
+        );
+        correlation.provenance = Provenance::Derived;
+        timeline.record(correlation).unwrap();
         let mut down = RawEvent::observed_at(
             session,
             20,
@@ -571,6 +989,23 @@ mod tests {
         );
         temporal.provenance = Provenance::Derived;
         timeline.record(temporal).unwrap();
+        let mut dialog_snapshot = RawEvent::observed_at(
+            session,
+            90,
+            "browser",
+            "browser.page.snapshot",
+            json!({
+                "accessibility": {"nodes": [{
+                    "backendDOMNodeId": 9,
+                    "role": {"value": "dialog"},
+                    "name": {"value": "Confirm deletion"}
+                }]}
+            }),
+        );
+        dialog_snapshot
+            .artifact_refs
+            .push(artifacts.put(b"dialog viewport fixture").unwrap());
+        timeline.record(dialog_snapshot).unwrap();
         let store = ExperienceStore::open(session, timeline_path, artifact_root).unwrap();
         Fixture {
             _temp: temp,
@@ -698,5 +1133,28 @@ mod tests {
                 .artifact_refs
                 .contains(&richer.frames[0].artifact_ref)
         );
+
+        let element = execute_query(
+            &fixture.store,
+            ExperienceQuery::BrowserElementUnderPointer {
+                event_id: fixture.down_id,
+            },
+        )
+        .unwrap();
+        assert_eq!(element.relation["element"]["nodeName"], "BUTTON");
+        assert_eq!(element.relation["element"]["accessibility"]["name"], "Save");
+        assert_eq!(element.relation["snapshotDistanceNs"], 5);
+
+        let dialog = execute_query(
+            &fixture.store,
+            ExperienceQuery::LastDialog {
+                text: Some("deletion".into()),
+            },
+        )
+        .unwrap();
+        assert_eq!(dialog.relation["dialog"]["role"], "dialog");
+        assert_eq!(dialog.relation["dialog"]["name"], "Confirm deletion");
+        assert_eq!(dialog.interval.start_ns, 20);
+        assert_eq!(dialog.interval.end_ns, 90);
     }
 }
