@@ -108,9 +108,15 @@ impl Listener {
         &self,
         timestamp: u64,
         kind: &str,
-        payload: serde_json::Value,
+        mut payload: serde_json::Value,
         artifact_refs: Vec<String>,
     ) {
+        if let Some(object) = payload.as_object_mut() {
+            object.insert(
+                "processingLatencyNs".into(),
+                monotonic_ns().saturating_sub(timestamp).into(),
+            );
+        }
         self.emit_at_with_artifacts(timestamp, "display", kind, payload, artifact_refs);
         let mut state = self.state.lock().expect("display mutex poisoned");
         state.last_display_ns = Some(timestamp);
@@ -546,6 +552,33 @@ impl HostComputer {
         Ok(timestamp)
     }
 
+    fn complete_input(
+        &self,
+        kind: &str,
+        action_id: Uuid,
+        started_ns: u64,
+    ) -> Result<ActionReceipt> {
+        let completed_ns = monotonic_ns();
+        self.sink.record(RawEvent::observed_at(
+            self.session_id,
+            completed_ns,
+            "input",
+            "input.action.completed",
+            json!({
+                "actionId": action_id,
+                "actionKind": kind,
+                "startedNs": started_ns,
+                "completedNs": completed_ns,
+                "actionDurationNs": completed_ns.saturating_sub(started_ns)
+            }),
+        ))?;
+        Ok(ActionReceipt {
+            action_id,
+            started_ns,
+            completed_ns,
+        })
+    }
+
     pub async fn move_pointer(&self, x: u32, y: u32) -> Result<ActionReceipt> {
         let action_id = Uuid::new_v4();
         let started_ns = self.record_input("pointer.move", action_id, json!({"x": x, "y": y}))?;
@@ -554,7 +587,7 @@ impl HostComputer {
         } else {
             bail!("relative pointer is unsupported until its current position is known");
         }
-        Ok(ActionReceipt::completed(action_id, started_ns))
+        self.complete_input("pointer.move", action_id, started_ns)
     }
 
     pub async fn mouse_down(&self, button: MouseButton) -> Result<ActionReceipt> {
@@ -565,7 +598,7 @@ impl HostComputer {
             json!({"button": format!("{button:?}")}),
         )?;
         self.mouse.press(button as u32).await?;
-        Ok(ActionReceipt::completed(action_id, started_ns))
+        self.complete_input("pointer.down", action_id, started_ns)
     }
 
     pub async fn mouse_up(&self, button: MouseButton) -> Result<ActionReceipt> {
@@ -576,7 +609,7 @@ impl HostComputer {
             json!({"button": format!("{button:?}")}),
         )?;
         self.mouse.release(button as u32).await?;
-        Ok(ActionReceipt::completed(action_id, started_ns))
+        self.complete_input("pointer.up", action_id, started_ns)
     }
 
     pub async fn key_down(&self, keycode: u32) -> Result<ActionReceipt> {
@@ -584,7 +617,7 @@ impl HostComputer {
         let started_ns = self.record_input("key.down", action_id, json!({"keycode": keycode}))?;
         self.keyboard.press(keycode).await?;
         tokio::time::sleep(Duration::from_millis(150)).await;
-        Ok(ActionReceipt::completed(action_id, started_ns))
+        self.complete_input("key.down", action_id, started_ns)
     }
 
     pub async fn key_up(&self, keycode: u32) -> Result<ActionReceipt> {
@@ -592,7 +625,7 @@ impl HostComputer {
         let started_ns = self.record_input("key.up", action_id, json!({"keycode": keycode}))?;
         self.keyboard.release(keycode).await?;
         tokio::time::sleep(Duration::from_millis(150)).await;
-        Ok(ActionReceipt::completed(action_id, started_ns))
+        self.complete_input("key.up", action_id, started_ns)
     }
 
     pub async fn key_press(&self, keycode: u32) -> Result<ActionReceipt> {
@@ -611,7 +644,7 @@ impl HostComputer {
                     KeyTransition::Up(keycode) => ("key.up", keycode),
                 };
                 let action_id = Uuid::new_v4();
-                self.record_input(
+                let started_ns = self.record_input(
                     kind,
                     action_id,
                     json!({"keycode": keycode, "character": character.to_string()}),
@@ -621,6 +654,7 @@ impl HostComputer {
                     KeyTransition::Up(_) => self.keyboard.release(keycode).await?,
                 }
                 tokio::time::sleep(Duration::from_millis(150)).await;
+                self.complete_input(kind, action_id, started_ns)?;
             }
         }
         Ok(())
@@ -633,16 +667,6 @@ pub struct ActionReceipt {
     pub action_id: Uuid,
     pub started_ns: u64,
     pub completed_ns: u64,
-}
-
-impl ActionReceipt {
-    fn completed(action_id: Uuid, started_ns: u64) -> Self {
-        Self {
-            action_id,
-            started_ns,
-            completed_ns: monotonic_ns(),
-        }
-    }
 }
 
 fn us_keycode(c: char) -> Option<(u32, bool)> {

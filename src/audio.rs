@@ -51,6 +51,8 @@ struct StreamCapture {
     ended_ns: Option<u64>,
     chunk_count: u64,
     received_bytes: u64,
+    callback_processing_ns: u64,
+    max_callback_processing_ns: u64,
     pcm: Vec<u8>,
     truncated: bool,
     finished: bool,
@@ -113,6 +115,8 @@ impl AudioOutListener {
                 ended_ns: None,
                 chunk_count: 0,
                 received_bytes: 0,
+                callback_processing_ns: 0,
+                max_callback_processing_ns: 0,
                 pcm: Vec::new(),
                 truncated: false,
                 finished: false,
@@ -174,6 +178,9 @@ impl AudioOutListener {
         let retained = remaining.min(data.len());
         stream.pcm.extend_from_slice(&data[..retained]);
         stream.truncated |= retained < data.len();
+        let processing_ns = monotonic_ns().saturating_sub(timestamp);
+        stream.callback_processing_ns = stream.callback_processing_ns.saturating_add(processing_ns);
+        stream.max_callback_processing_ns = stream.max_callback_processing_ns.max(processing_ns);
     }
 
     #[zbus(property)]
@@ -484,6 +491,8 @@ fn finalize_audio(
                 "chunkCount": stream.chunk_count,
                 "receivedByteLength": stream.received_bytes,
                 "retainedByteLength": stream.pcm.len(),
+                "callbackProcessingNs": stream.callback_processing_ns,
+                "maxCallbackProcessingNs": stream.max_callback_processing_ns,
                 "durationMsFromRetainedPcm": duration_ms,
                 "truncated": stream.truncated,
                 "enabledAtEnd": stream.enabled,
@@ -632,6 +641,8 @@ mod tests {
                 ended_ns: Some(200),
                 chunk_count: 2,
                 received_bytes: 4,
+                callback_processing_ns: 40,
+                max_callback_processing_ns: 30,
                 pcm: vec![0, 0, 255, 127],
                 truncated: false,
                 finished: true,
