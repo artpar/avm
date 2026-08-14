@@ -239,14 +239,20 @@ pub struct ProcessSnapshot {
 #[cfg(target_os = "linux")]
 impl ProcessSnapshot {
     pub fn capture(pid: u32) -> Result<Self> {
+        Self::capture_with_vcpu_threads(pid, &[])
+    }
+
+    pub fn capture_with_vcpu_threads(pid: u32, vcpu_thread_ids: &[u32]) -> Result<Self> {
         let process = std::path::PathBuf::from(format!("/proc/{pid}"));
         let (ticks, rss_pages) = stat_values(&std::fs::read_to_string(process.join("stat"))?)?;
         let mut vcpu_ticks = 0_u64;
-        for entry in std::fs::read_dir(process.join("task"))? {
-            let task = entry?.path();
-            let name = std::fs::read_to_string(task.join("comm")).unwrap_or_default();
-            if name.starts_with("CPU ") {
-                let (task_ticks, _) = stat_values(&std::fs::read_to_string(task.join("stat"))?)?;
+        for thread_id in vcpu_thread_ids {
+            let task_stat = process
+                .join("task")
+                .join(thread_id.to_string())
+                .join("stat");
+            if let Ok(contents) = std::fs::read_to_string(task_stat) {
+                let (task_ticks, _) = stat_values(&contents)?;
                 vcpu_ticks = vcpu_ticks.saturating_add(task_ticks);
             }
         }

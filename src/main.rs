@@ -13,6 +13,8 @@ use avm::audio::{
 };
 #[cfg(target_os = "linux")]
 use avm::performance::{ProcessSnapshot, ResourceMeasurement, build_report, tree_usage};
+#[cfg(target_os = "linux")]
+use avm::qmp::QmpClient;
 
 use anyhow::{Context, Result, bail, ensure};
 use avm::storage::ArtifactStore;
@@ -1712,13 +1714,29 @@ async fn performance_measure(run: &Path, duration_ms: u64) -> Result<()> {
         .trim()
         .parse::<u32>()
         .context("parse QEMU pid")?;
+    let mut qmp = QmpClient::connect(&paths.qmp_socket).await?;
+    let vcpu_thread_ids = qmp
+        .execute("query-cpus-fast", None)
+        .await?
+        .as_array()
+        .context("QMP query-cpus-fast returned a non-array")?
+        .iter()
+        .map(|cpu| {
+            cpu.get("thread-id")
+                .and_then(serde_json::Value::as_u64)
+                .context("QMP CPU has no thread-id")
+                .and_then(|id| u32::try_from(id).context("QMP CPU thread-id exceeds u32"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    ensure!(!vcpu_thread_ids.is_empty(), "QMP returned no vCPU threads");
     let supervisor_pid = std::process::id();
     let duration = Duration::from_millis(duration_ms);
 
-    let qemu_baseline_start = ProcessSnapshot::capture(qemu_pid)?;
+    let qemu_baseline_start =
+        ProcessSnapshot::capture_with_vcpu_threads(qemu_pid, &vcpu_thread_ids)?;
     let supervisor_baseline_start = ProcessSnapshot::capture(supervisor_pid)?;
     tokio::time::sleep(duration).await;
-    let qemu_baseline_end = ProcessSnapshot::capture(qemu_pid)?;
+    let qemu_baseline_end = ProcessSnapshot::capture_with_vcpu_threads(qemu_pid, &vcpu_thread_ids)?;
     let supervisor_baseline_end = ProcessSnapshot::capture(supervisor_pid)?;
     let baseline = qemu_baseline_start.phase(
         &qemu_baseline_end,
@@ -1732,14 +1750,16 @@ async fn performance_measure(run: &Path, duration_ms: u64) -> Result<()> {
         .unwrap_or(0);
     let artifacts_before = tree_usage(&paths.artifacts)?;
     let start_ns = monotonic_ns();
-    let qemu_instrumented_start = ProcessSnapshot::capture(qemu_pid)?;
+    let qemu_instrumented_start =
+        ProcessSnapshot::capture_with_vcpu_threads(qemu_pid, &vcpu_thread_ids)?;
     let supervisor_instrumented_start = ProcessSnapshot::capture(supervisor_pid)?;
     let computer = connect_computer(&config).await?;
     tokio::time::sleep(duration).await;
     drop(computer);
     let end_ns = monotonic_ns();
     let measured_duration = Duration::from_nanos(end_ns.saturating_sub(start_ns));
-    let qemu_instrumented_end = ProcessSnapshot::capture(qemu_pid)?;
+    let qemu_instrumented_end =
+        ProcessSnapshot::capture_with_vcpu_threads(qemu_pid, &vcpu_thread_ids)?;
     let supervisor_instrumented_end = ProcessSnapshot::capture(supervisor_pid)?;
     let instrumented = qemu_instrumented_start.phase(
         &qemu_instrumented_end,
