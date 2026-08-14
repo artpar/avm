@@ -25,6 +25,7 @@ packages:
   - gir1.2-atspi-2.0
   - git
   - locales
+  - linux-image-generic
   - nodejs
   - npm
   - openssh-server
