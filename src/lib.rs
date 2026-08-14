@@ -9,6 +9,7 @@ pub mod policy;
 pub mod qmp;
 pub mod query;
 pub mod remote;
+pub mod runtime;
 pub mod session;
 pub mod storage;
 pub mod temporal;

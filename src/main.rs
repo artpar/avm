@@ -29,6 +29,7 @@ use avm::{
     remote::{
         RemoteChannelConfig, TeeEventSink, apply_transfer, prepare_transfer, serve_event_relay,
     },
+    runtime::import_runtime_jsonl,
     session::ExperimentSession,
     temporal::{TemporalConfig, analyze_temporal},
     timeline::{ExperienceEventSink, TimelineStore},
@@ -164,6 +165,12 @@ enum Command {
         run: PathBuf,
         #[arg(long, default_value_t = 10_000)]
         duration_ms: u64,
+    },
+    RuntimeImport {
+        #[arg(long)]
+        run: PathBuf,
+        #[arg(long)]
+        input: PathBuf,
     },
     BrowserObserve {
         #[arg(long)]
@@ -561,6 +568,7 @@ async fn main() -> Result<()> {
         Command::AccessibilityObserve { run, duration_ms } => {
             accessibility_observe(&run, duration_ms)?
         }
+        Command::RuntimeImport { run, input } => runtime_import(&run, &input)?,
         Command::BrowserObserve {
             run,
             endpoint,
@@ -1445,6 +1453,25 @@ fn accessibility_observe(run: &Path, duration_ms: u64) -> Result<()> {
         sink,
         std::time::Duration::from_millis(duration_ms),
     )?;
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
+fn runtime_import(run: &Path, input: &Path) -> Result<()> {
+    let config = load_run(run)?;
+    let bytes = std::fs::read(input)
+        .with_context(|| format!("read runtime telemetry {}", input.display()))?;
+    let artifacts = ArtifactStore::new(config.paths().artifacts)?;
+    let (events, result) = import_runtime_jsonl(config.id, &bytes, &artifacts)?;
+    let paths = config.paths();
+    let sink = ExperienceEventSink::open_dynamic(
+        paths.timeline,
+        paths.events,
+        &config.candidate_workspace,
+    )?;
+    for event in events {
+        sink.record(event)?;
+    }
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
 }

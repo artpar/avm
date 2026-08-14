@@ -53,6 +53,13 @@ pub enum ExperienceQuery {
     LastDialog {
         text: Option<String>,
     },
+    RuntimeTrace {
+        event_id: Uuid,
+        #[serde(default = "default_before_ms")]
+        before_ms: u64,
+        #[serde(default = "default_after_ms")]
+        after_ms: u64,
+    },
 }
 
 fn default_before_ms() -> u64 {
@@ -132,7 +139,76 @@ pub fn execute_query(
             browser_element_under_pointer(store, query.clone(), *event_id)
         }
         ExperienceQuery::LastDialog { text } => last_dialog(store, query.clone(), text.as_deref()),
+        ExperienceQuery::RuntimeTrace {
+            event_id,
+            before_ms,
+            after_ms,
+        } => runtime_trace(store, query.clone(), *event_id, *before_ms, *after_ms),
     }
+}
+
+fn runtime_trace(
+    store: &ExperienceStore,
+    query: ExperienceQuery,
+    event_id: Uuid,
+    before_ms: u64,
+    after_ms: u64,
+) -> Result<ExperienceQueryResult> {
+    let anchor = required_event(store, event_id)?;
+    ensure!(
+        anchor.source == "runtime",
+        "selected event is not runtime telemetry"
+    );
+    let trace_id = anchor
+        .payload
+        .get("traceId")
+        .and_then(Value::as_str)
+        .context("runtime event has no traceId")?;
+    ensure!(
+        trace_id.len() == 32 && trace_id.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "runtime event traceId is invalid"
+    );
+    let all = store.history(None, None, &[])?;
+    let trace_members = all
+        .iter()
+        .filter(|event| {
+            event.source == "runtime"
+                && event.payload.get("traceId").and_then(Value::as_str) == Some(trace_id)
+        })
+        .collect::<Vec<_>>();
+    ensure!(!trace_members.is_empty(), "runtime trace has no members");
+    let trace_start = trace_members
+        .iter()
+        .map(|event| event.host_monotonic_ns)
+        .min()
+        .context("runtime trace has no start")?;
+    let trace_end = trace_members
+        .iter()
+        .map(|event| event.host_monotonic_ns)
+        .max()
+        .context("runtime trace has no end")?;
+    let interval = QueryInterval {
+        start_ns: trace_start.saturating_sub(ms_to_ns(before_ms)?),
+        end_ns: trace_end.saturating_add(ms_to_ns(after_ms)?),
+    };
+    let events = interval_events(store, &interval)?;
+    let frames = replay_frames(store, &interval, 12)?;
+    build_result(
+        query,
+        json!({
+            "type": "instrumented_trace_context",
+            "anchorEventId": event_id,
+            "traceId": trace_id,
+            "traceMemberEventIds": trace_members.iter().map(|event| event.id).collect::<Vec<_>>(),
+            "traceMembershipBasis": "exact_instrumented_trace_id",
+            "traceMembershipCertainty": "declared_by_instrumentation",
+            "temporalNeighborsAreCausal": false,
+            "note": "Events without this trace ID are included only as temporal context."
+        }),
+        interval,
+        events,
+        frames,
+    )
 }
 
 fn around_event(
@@ -857,6 +933,7 @@ mod tests {
         down_id: Uuid,
         request_id: Uuid,
         exception_id: Uuid,
+        runtime_span_id: Uuid,
     }
 
     fn fixture() -> Fixture {
@@ -986,6 +1063,32 @@ mod tests {
         );
         let exception_id = exception.id;
         timeline.record(exception).unwrap();
+        let runtime_span = RawEvent::observed_at(
+            session,
+            42,
+            "runtime",
+            "runtime.span",
+            json!({
+                "traceId": "0123456789abcdef0123456789abcdef",
+                "spanId": "0123456789abcdef",
+                "name": "POST /api"
+            }),
+        );
+        let runtime_span_id = runtime_span.id;
+        timeline.record(runtime_span).unwrap();
+        timeline
+            .record(RawEvent::observed_at(
+                session,
+                48,
+                "runtime",
+                "runtime.application.log",
+                json!({
+                    "traceId": "0123456789abcdef0123456789abcdef",
+                    "spanId": "0123456789abcdef",
+                    "body": "saved"
+                }),
+            ))
+            .unwrap();
         let mut evidence = RawEvent::observed_at(
             session,
             70,
@@ -1032,6 +1135,7 @@ mod tests {
             down_id,
             request_id,
             exception_id,
+            runtime_span_id,
         }
     }
 
@@ -1181,5 +1285,31 @@ mod tests {
         assert_eq!(dialog.relation["dialog"]["name"], "Confirm deletion");
         assert_eq!(dialog.interval.start_ns, 20);
         assert_eq!(dialog.interval.end_ns, 90);
+
+        let runtime = execute_query(
+            &fixture.store,
+            ExperienceQuery::RuntimeTrace {
+                event_id: fixture.runtime_span_id,
+                before_ms: 0,
+                after_ms: 0,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            runtime.relation["traceMemberEventIds"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(runtime.relation["temporalNeighborsAreCausal"], false);
+        assert_eq!(
+            runtime
+                .observed_events
+                .iter()
+                .filter(|event| event.source == "runtime")
+                .count(),
+            2
+        );
     }
 }
