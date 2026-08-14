@@ -1,0 +1,1 @@
+{"name":"avm-board-evaluator","private":true,"type":"module","scripts":{"check":"node check.mjs"},"engines":{"node":">=18"}}
