@@ -5,6 +5,13 @@ All notable changes to AVM are documented here. The project follows
 [Conventional Commits](https://www.conventionalcommits.org/) to automate version
 selection and release notes.
 
+## [0.2.0](https://github.com/artpar/avm/compare/v0.1.3...v0.2.0) (2026-08-15)
+
+
+### Features
+
+* add read-only semantic run inspector ([a6cdd7d](https://github.com/artpar/avm/commit/a6cdd7de910eeaac1c8b87bffabd86e51831b365))
+
 ## [0.1.3](https://github.com/artpar/avm/compare/v0.1.2...v0.1.3) (2026-08-15)
 
 
