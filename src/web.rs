@@ -713,7 +713,15 @@ mod tests {
             instance_token: token,
         };
         write_process_record(state.path(), &process).unwrap();
-        assert!(process_matches(&process));
+        let matched = (0..100).any(|_| {
+            if process_matches(&process) {
+                true
+            } else {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                false
+            }
+        });
+        assert!(matched, "child never published its tokenized command line");
 
         stop_recorded_inspector(state.path());
 

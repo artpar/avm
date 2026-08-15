@@ -17,6 +17,7 @@ This is the canonical project work tracker. Status is one of `planned`,
 | DEV-004 | P1 | planned | Guest-safe development build output | Define a supervisor-owned UID mapping or explicit build-output channel so guest builds never require weakening candidate mount permissions; until then use guest-local `CARGO_TARGET_DIR` and copy artifacts out explicitly. |
 | OBS-001 | P1 | planned | Display stability under repeated Chromium scanouts | Reproduce the final dogfood timeout where identical full scanouts kept refreshing stability, determine whether the later QEMU exit is related, and make capture either converge or return a precise non-destructive diagnosis. |
 | OBS-002 | P1 | planned | Chromium CDP reachability after guest restart | Ensure the guest browser listener and QEMU forwarding agree on a reachable address; verify `/json/version` from the supervisor after both first boot and restart. |
+| DOC-002 | P2 | planned | Initialize the GitHub Wiki backing repository | Create the first Wiki page through an authenticated GitHub browser session so the existing source-controlled Wiki workflow can publish `wiki/*.md`. |
 
 ## Session notes
 
@@ -29,3 +30,6 @@ This is the canonical project work tracker. Status is one of `planned`,
 - 2026-08-15: inspector review hardening added token-validated process teardown,
   failed-start child reaping, empty-source semantics, replacement-only relation
   rendering, and active-frame reload regression coverage.
+- 2026-08-15: the `v0.2.0` release gate exposed a Linux spawn/exec race in the
+  process-identity regression test; production readiness already polls, and the
+  test now waits for the tokenized command line before exercising teardown.
