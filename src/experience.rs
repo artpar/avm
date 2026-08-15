@@ -227,7 +227,13 @@ pub fn reconstruct_frame(
         .iter()
         .filter(|event| {
             event.host_monotonic_ns <= at_ns
-                && matches!(event.kind.as_str(), "display.scanout" | "display.update")
+                && matches!(
+                    event.kind.as_str(),
+                    "display.scanout"
+                        | "display.update"
+                        | "display.disable"
+                        | "display.update_rejected"
+                )
         })
         .collect::<Vec<_>>();
     ordered.sort_by_key(|event| (event.host_monotonic_ns, event.id));
@@ -235,6 +241,18 @@ pub fn reconstruct_frame(
     let mut frame = None;
     let mut last_event = None;
     for event in ordered {
+        if event.kind == "display.disable"
+            || (event.kind == "display.update_rejected"
+                && event
+                    .payload
+                    .get("recovery")
+                    .and_then(|value| value.as_str())
+                    == Some("awaiting_full_scanout"))
+        {
+            frame = None;
+            last_event = None;
+            continue;
+        }
         let artifact_ref = event
             .artifact_refs
             .first()
@@ -371,6 +389,33 @@ mod tests {
         let reconstructed = reconstruct_frame(&[changed, scanout], &artifacts, 20).unwrap();
         assert_eq!(reconstructed.framebuffer, final_frame);
         assert_eq!(reconstructed.host_monotonic_ns, 20);
+    }
+
+    #[test]
+    fn display_disable_invalidates_reconstructed_state_until_a_new_scanout() {
+        let temp = tempfile::tempdir().unwrap();
+        let artifacts = ArtifactStore::new(temp.path().join("artifacts")).unwrap();
+        let session = Uuid::new_v4();
+        let bytes = vec![0_u8; 16];
+        let frame = Framebuffer::from_scanout(2, 2, 8, crate::framebuffer::PIXMAN_X8R8G8B8, &bytes)
+            .unwrap();
+        let mut scanout = RawEvent::observed_at(
+            session,
+            10,
+            "display",
+            "display.scanout",
+            json!({
+                "width": 2, "height": 2, "stride": 8,
+                "pixmanFormat": crate::framebuffer::PIXMAN_X8R8G8B8,
+                "frameSha256": frame.sha256()
+            }),
+        );
+        scanout.artifact_refs.push(artifacts.put(&bytes).unwrap());
+        let disabled = RawEvent::observed_at(session, 20, "display", "display.disable", json!({}));
+
+        assert!(reconstruct_frame(&[scanout.clone(), disabled.clone()], &artifacts, 15).is_ok());
+        let error = reconstruct_frame(&[scanout, disabled], &artifacts, 25).unwrap_err();
+        assert!(error.to_string().contains("no reconstructable framebuffer"));
     }
 
     #[test]

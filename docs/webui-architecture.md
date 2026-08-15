@@ -24,14 +24,29 @@ each present artifact is SHA-256 verified when read. Reconstructed PNG frames
 remain in memory and are not inserted as derived artifacts. API responses are
 bounded, and truncation is explicit.
 
-The server supplies run summary, filtered events, whole-run density, verified
-artifacts, and reconstructed frames. Relationship edges are emitted only for
+The server supplies a run summary with per-source coverage, filtered events,
+whole-run aggregates, verified artifacts, selected-time display status, and
+reconstructed frames. `GET /api/frame-status?timeNs=…` distinguishes no
+collection, a time before capture, an available persisted display state, and a
+disabled or invalidated display state, and a reconstruction defect. Only
+accepted scanout/update evidence contributes framebuffer state; disable and
+full-scanout recovery boundaries clear it. `GET /api/frame-at?timeNs=…` returns
+the reconstruction at that exact machine time. Relationship edges are emitted only for
 explicit event references or shared artifact references. Temporal proximity is
 not presented as causality.
 
+Every failed API response uses the same JSON problem shape: stable `code`, human
+`message`, diagnostic `detail`, `requestId`, and `recoverable`. The server writes
+the same request ID and code as structured stderr so the non-modal problem shelf
+can be correlated with supervisor logs without obscuring unaffected evidence.
+
 ## Browser boundary
 
-Static HTML, CSS, and JavaScript are compiled into the binary. Responses carry
+Static HTML, CSS, and JavaScript are compiled into the binary. The browser maps
+raw collectors into equal-status semantic lanes while preserving unknown
+collectors as additional lanes; this mapping is presentation only and never
+rewrites evidence. Trace and Events share focus range, cursor, filters, and URL
+state. Responses carry
 a restrictive Content Security Policy and defensive headers. The interface has
 GET routes only and binds to loopback; it has no mutation API. The WebUI uses no
 third-party browser runtime dependencies, remote fonts, analytics, or external

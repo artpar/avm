@@ -8,16 +8,16 @@ product
 
 AVM serves software developers who use an agent to build, run, inspect, and
 verify their own software inside an instrumented virtual computer. They need to
-understand the complete recorded machine history and move from an observed
-defect to trustworthy evidence without reconstructing the story from
-disconnected logs and screenshots.
+browse and understand the complete recorded machine history with minimal effort,
+without reconstructing it from disconnected metrics, logs, requests, files,
+audio, input, and screenshots.
 
 ## Product Purpose
 
 AVM makes graphical software-development work observable, reproducible, and
 verifiable while keeping the supervisor—not the candidate—authoritative. The
-human interface should let a developer see what the guest and agent experienced,
-navigate the unified timeline, and inspect supporting evidence. It is
+human interface should let a developer see what the whole machine experienced,
+navigate one unified time domain, and inspect all collected sources together. It is
 deliberately observational: controls remain explicit CLI/MCP operations outside
 the human interface.
 

@@ -66,12 +66,26 @@ where
 
 impl IntoResponse for WebError {
     fn into_response(self) -> Response {
-        eprintln!("AVM WebUI request failed: {:#}", self.0);
+        let request_id = Uuid::new_v4();
+        let detail = format!("{:#}", self.0);
+        eprintln!(
+            "{}",
+            serde_json::json!({
+                "level": "error",
+                "component": "webui",
+                "requestId": request_id,
+                "code": "inspector_request_failed",
+                "detail": detail,
+            })
+        );
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({
-                "error": "inspector_request_failed",
+                "code": "inspector_request_failed",
                 "message": "The requested evidence could not be read or verified.",
+                "detail": detail,
+                "requestId": request_id,
+                "recoverable": true,
             })),
         )
             .into_response()
@@ -87,6 +101,7 @@ struct RunSummary {
     event_count: usize,
     artifact_count: usize,
     source_counts: BTreeMap<String, usize>,
+    source_coverage: BTreeMap<String, SourceCoverage>,
     provenance_counts: BTreeMap<String, usize>,
     start_ns: Option<u64>,
     end_ns: Option<u64>,
@@ -94,6 +109,14 @@ struct RunSummary {
     ended_at: Option<String>,
     repository_fingerprints: Vec<String>,
     read_only: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SourceCoverage {
+    start_ns: u64,
+    end_ns: u64,
+    count: usize,
 }
 
 #[derive(Default, Deserialize)]
@@ -146,6 +169,41 @@ struct OverviewBucket {
     end_ns: u64,
     count: usize,
     source_counts: BTreeMap<String, usize>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FrameAtQuery {
+    time_ns: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FrameAvailability {
+    available: bool,
+    state: &'static str,
+    message: String,
+    selected_ns: u64,
+    frame_ns: Option<u64>,
+    frame_event_id: Option<Uuid>,
+    capture_start_ns: Option<u64>,
+    capture_end_ns: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DisplayStateAtTime {
+    NotCollected,
+    BeforeCapture,
+    Available,
+    Disabled,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DisplayContext<'a> {
+    state: DisplayStateAtTime,
+    capture_start_ns: Option<u64>,
+    capture_end_ns: Option<u64>,
+    frame_event: Option<&'a RawEvent>,
 }
 
 pub async fn start_inspector(config: &RunConfig) -> Result<InspectorEndpoint> {
@@ -257,6 +315,8 @@ pub async fn serve_inspector(run: &Path, _instance_token: Uuid) -> Result<()> {
         .route("/api/overview", get(overview))
         .route("/api/artifacts/{digest}", get(artifact))
         .route("/api/frames/{event_id}", get(frame))
+        .route("/api/frame-status", get(frame_status))
+        .route("/api/frame-at", get(frame_at))
         .fallback(get(index))
         .with_state(state);
     let listener = tokio::net::TcpListener::bind(address).await?;
@@ -376,11 +436,24 @@ fn static_response(content: &'static str, content_type: &'static str) -> Respons
 async fn run_summary(State(state): State<WebState>) -> Result<Json<RunSummary>, WebError> {
     let events = state.timeline.all(state.run.id)?;
     let mut source_counts = BTreeMap::new();
+    let mut source_coverage = BTreeMap::<String, SourceCoverage>::new();
     let mut provenance_counts = BTreeMap::new();
     let mut artifacts = BTreeSet::new();
     let mut fingerprints = BTreeSet::new();
     for event in &events {
         *source_counts.entry(event.source.clone()).or_insert(0) += 1;
+        source_coverage
+            .entry(event.source.clone())
+            .and_modify(|coverage| {
+                coverage.start_ns = coverage.start_ns.min(event.host_monotonic_ns);
+                coverage.end_ns = coverage.end_ns.max(event.host_monotonic_ns);
+                coverage.count += 1;
+            })
+            .or_insert(SourceCoverage {
+                start_ns: event.host_monotonic_ns,
+                end_ns: event.host_monotonic_ns,
+                count: 1,
+            });
         *provenance_counts
             .entry(provenance_name(event).to_owned())
             .or_insert(0) += 1;
@@ -396,6 +469,7 @@ async fn run_summary(State(state): State<WebState>) -> Result<Json<RunSummary>, 
         event_count: events.len(),
         artifact_count: artifacts.len(),
         source_counts,
+        source_coverage,
         provenance_counts,
         start_ns: events.first().map(|event| event.host_monotonic_ns),
         end_ns: events.last().map(|event| event.host_monotonic_ns),
@@ -521,6 +595,172 @@ async fn frame(
         state.root.join("artifacts"),
     )?;
     let frame = experience.frame_read_only(event.host_monotonic_ns)?;
+    let mut response = Response::new(Body::from(frame.png));
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
+    response.headers_mut().insert(
+        "x-avm-frame-sha256",
+        HeaderValue::from_str(&frame.frame_sha256)?,
+    );
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(response)
+}
+
+async fn frame_status(
+    State(state): State<WebState>,
+    Query(query): Query<FrameAtQuery>,
+) -> Result<Json<FrameAvailability>, WebError> {
+    let events = state.timeline.all(state.run.id)?;
+    let context = display_context(&events, query.time_ns);
+
+    let Some(frame_event) = context.frame_event else {
+        let (state_name, message) = match context.state {
+            DisplayStateAtTime::NotCollected => (
+                "not_collected",
+                "No reconstructable display evidence was collected for this run.",
+            ),
+            DisplayStateAtTime::BeforeCapture => (
+                "before_capture",
+                "No display evidence exists at this time; display collection begins later.",
+            ),
+            DisplayStateAtTime::Disabled => (
+                "display_disabled",
+                "Display capture is disabled at this time; no framebuffer state persists.",
+            ),
+            DisplayStateAtTime::Available => unreachable!("available display state has a frame"),
+        };
+        return Ok(Json(FrameAvailability {
+            available: false,
+            state: state_name,
+            message: message.into(),
+            selected_ns: query.time_ns,
+            frame_ns: None,
+            frame_event_id: None,
+            capture_start_ns: context.capture_start_ns,
+            capture_end_ns: context.capture_end_ns,
+        }));
+    };
+
+    let experience = ExperienceStore::open_read_only(
+        state.run.id,
+        state.root.join("timeline.sqlite3"),
+        state.root.join("artifacts"),
+    )?;
+    match experience.frame_read_only(query.time_ns) {
+        Ok(_) => Ok(Json(FrameAvailability {
+            available: true,
+            state: "available",
+            message: "Display state reconstructed at the selected time.".into(),
+            selected_ns: query.time_ns,
+            frame_ns: Some(frame_event.host_monotonic_ns),
+            frame_event_id: Some(frame_event.id),
+            capture_start_ns: context.capture_start_ns,
+            capture_end_ns: context.capture_end_ns,
+        })),
+        Err(error) => Ok(Json(FrameAvailability {
+            available: false,
+            state: "reconstruction_failed",
+            message: format!("Display evidence exists, but reconstruction failed: {error:#}"),
+            selected_ns: query.time_ns,
+            frame_ns: Some(frame_event.host_monotonic_ns),
+            frame_event_id: Some(frame_event.id),
+            capture_start_ns: context.capture_start_ns,
+            capture_end_ns: context.capture_end_ns,
+        })),
+    }
+}
+
+fn display_context(events: &[RawEvent], time_ns: u64) -> DisplayContext<'_> {
+    let mut ordered = events
+        .iter()
+        .filter(|event| event.source == "display")
+        .collect::<Vec<_>>();
+    ordered.sort_by_key(|event| (event.host_monotonic_ns, event.id));
+
+    let mut capture_start_ns = None;
+    let mut capture_end_ns = None;
+    let mut reconstructable = false;
+    let mut frame_event = None;
+    let mut disabled_at_selection = false;
+
+    for event in ordered {
+        match event.kind.as_str() {
+            "display.scanout" => {
+                capture_start_ns.get_or_insert(event.host_monotonic_ns);
+                capture_end_ns = Some(event.host_monotonic_ns);
+                reconstructable = true;
+                if event.host_monotonic_ns <= time_ns {
+                    frame_event = Some(event);
+                    disabled_at_selection = false;
+                }
+            }
+            "display.update" if reconstructable => {
+                capture_end_ns = Some(event.host_monotonic_ns);
+                if event.host_monotonic_ns <= time_ns {
+                    frame_event = Some(event);
+                }
+            }
+            "display.disable" => {
+                if reconstructable {
+                    capture_end_ns = Some(event.host_monotonic_ns);
+                    reconstructable = false;
+                    if event.host_monotonic_ns <= time_ns {
+                        frame_event = None;
+                        disabled_at_selection = true;
+                    }
+                }
+            }
+            "display.update_rejected"
+                if reconstructable
+                    && event
+                        .payload
+                        .get("recovery")
+                        .and_then(|value| value.as_str())
+                        == Some("awaiting_full_scanout") =>
+            {
+                capture_end_ns = Some(event.host_monotonic_ns);
+                reconstructable = false;
+                if event.host_monotonic_ns <= time_ns {
+                    frame_event = None;
+                    disabled_at_selection = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let state = if frame_event.is_some() {
+        DisplayStateAtTime::Available
+    } else if capture_start_ns.is_none() {
+        DisplayStateAtTime::NotCollected
+    } else if time_ns < capture_start_ns.expect("capture start exists") {
+        DisplayStateAtTime::BeforeCapture
+    } else if disabled_at_selection {
+        DisplayStateAtTime::Disabled
+    } else {
+        DisplayStateAtTime::BeforeCapture
+    };
+    DisplayContext {
+        state,
+        capture_start_ns,
+        capture_end_ns,
+        frame_event,
+    }
+}
+
+async fn frame_at(
+    State(state): State<WebState>,
+    Query(query): Query<FrameAtQuery>,
+) -> Result<Response, WebError> {
+    let experience = ExperienceStore::open_read_only(
+        state.run.id,
+        state.root.join("timeline.sqlite3"),
+        state.root.join("artifacts"),
+    )?;
+    let frame = experience.frame_read_only(query.time_ns)?;
     let mut response = Response::new(Body::from(frame.png));
     response
         .headers_mut()
@@ -670,6 +910,51 @@ mod tests {
         assert_eq!(sniff_mime(b"\x89PNG\r\n\x1a\nrest"), "image/png");
         assert_eq!(sniff_mime(b"plain text"), "text/plain; charset=utf-8");
         assert_eq!(sniff_mime(&[0, 159, 146, 150]), "application/octet-stream");
+    }
+
+    #[test]
+    fn display_context_distinguishes_absence_before_capture_and_available_state() {
+        let session = Uuid::new_v4();
+        let unrelated = RawEvent::observed_at(session, 5, "input", "key.down", json!({}));
+        let rejected = RawEvent::observed_at(
+            session,
+            10,
+            "display",
+            "display.scanout_dmabuf_unsupported",
+            json!({}),
+        );
+        let first = RawEvent::observed_at(session, 20, "display", "display.scanout", json!({}));
+        let update = RawEvent::observed_at(session, 30, "display", "display.update", json!({}));
+        let disabled = RawEvent::observed_at(session, 40, "display", "display.disable", json!({}));
+        let second = RawEvent::observed_at(session, 60, "display", "display.scanout", json!({}));
+        let events = vec![
+            unrelated,
+            rejected,
+            first.clone(),
+            update.clone(),
+            disabled,
+            second.clone(),
+        ];
+
+        let context = display_context(&events, 10);
+        assert_eq!(
+            (context.capture_start_ns, context.capture_end_ns),
+            (Some(20), Some(60))
+        );
+        assert_eq!(context.state, DisplayStateAtTime::BeforeCapture);
+        assert!(context.frame_event.is_none());
+
+        let context = display_context(&events, 35);
+        assert_eq!(context.state, DisplayStateAtTime::Available);
+        assert_eq!(context.frame_event.map(|event| event.id), Some(update.id));
+
+        let context = display_context(&events, 50);
+        assert_eq!(context.state, DisplayStateAtTime::Disabled);
+        assert!(context.frame_event.is_none());
+
+        let context = display_context(&events, 70);
+        assert_eq!(context.state, DisplayStateAtTime::Available);
+        assert_eq!(context.frame_event.map(|event| event.id), Some(second.id));
     }
 
     #[test]

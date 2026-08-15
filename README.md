@@ -126,8 +126,10 @@ avm capture --run "$RUN_CONFIG" --output /tmp/current.png
 
 `start` always launches the run's read-only WebUI on a random loopback port and
 returns its URL as `webUi`; `status` reports the live URL. The inspector's
-default causal trace, switchable event table, and selected evidence panel expose
-the complete collected timeline without VM controls or mutation APIs. See the
+default whole-machine trace aligns CPU, disk, network, logs, browser, input,
+display, audio, VM, and future collectors on one time axis. Its switchable event
+ledger and persistent logs/network/artifacts/selection regions expose the
+collected record without VM controls or mutation APIs. See the
 [human-interface guide](docs/human-interface.md).
 
 Interact through the real guest input path and inspect the durable record:
