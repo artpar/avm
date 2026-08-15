@@ -79,3 +79,30 @@ This gate proves the workstation can support the required loop. It does not
 change the controlled experiment's outcome: on the tested task/model, rich
 perception produced no functional-defect main effect and cost substantially
 more time, tools and tokens.
+
+## Final repository verification
+
+The final repository-wide check ran after acceptance:
+
+```text
+cargo fmt --check
+cargo test --all-targets
+cargo clippy --all-targets -- -D warnings
+npm test --prefix supervisor/browser
+node supervisor/mcp/check.mjs
+npm run check --prefix benchmarks/target-app
+npm run check --prefix benchmarks/evaluator
+node experiments/check.mjs
+node experiments/agent-metrics-check.mjs
+node experiments/real-agent-check.mjs
+node experiments/real-evaluator-check.mjs
+node experiments/final-demo-audit-check.mjs
+```
+
+All commands exited 0. Rust reported 66 library and 3 CLI tests passed. The
+browser observer reported 2 tests passed; the MCP contract reported 11 tools,
+12 actions, 9 typed query variants and 3 browser-observation modes. The
+experiment fixture reported 8 balanced trials across 4 conditions and 2
+repetitions. The final-audit fixtures accepted the fully correlated case and
+rejected both a defective score and a zero-defect run lacking network
+correlation.
