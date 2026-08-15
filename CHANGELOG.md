@@ -5,6 +5,13 @@ All notable changes to AVM are documented here. The project follows
 [Conventional Commits](https://www.conventionalcommits.org/) to automate version
 selection and release notes.
 
+## [0.3.1](https://github.com/artpar/avm/compare/v0.3.0...v0.3.1) (2026-08-15)
+
+
+### Bug Fixes
+
+* tolerate healthy guest image provisioning ([#25](https://github.com/artpar/avm/issues/25)) ([b6b0a7f](https://github.com/artpar/avm/commit/b6b0a7f1aae55a40433a3a0a6b8f1625ef4f97fa))
+
 ## [0.3.0](https://github.com/artpar/avm/compare/v0.2.2...v0.3.0) (2026-08-15)
 
 
