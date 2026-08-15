@@ -51,7 +51,11 @@ use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::json;
 
 #[derive(Parser)]
-#[command(name = "avm", about = "Host-owned instrumented virtual computer")]
+#[command(
+    name = "avm",
+    version,
+    about = "Host-owned instrumented virtual computer"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
