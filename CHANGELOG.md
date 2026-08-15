@@ -5,6 +5,13 @@ All notable changes to AVM are documented here. The project follows
 [Conventional Commits](https://www.conventionalcommits.org/) to automate version
 selection and release notes.
 
+## [0.2.2](https://github.com/artpar/avm/compare/v0.2.1...v0.2.2) (2026-08-15)
+
+
+### Bug Fixes
+
+* stabilize guest sensors and enable WebGL2 ([#21](https://github.com/artpar/avm/issues/21)) ([3fe6388](https://github.com/artpar/avm/commit/3fe638896edbdfd08d3a39a2d43b2615befde37b))
+
 ## [0.2.1](https://github.com/artpar/avm/compare/v0.2.0...v0.2.1) (2026-08-15)
 
 
