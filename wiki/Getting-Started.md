@@ -12,7 +12,7 @@ They may be the same Linux machine, but Codex does not need to run on the VM.
 
 ## 2. Install host dependencies
 
-Install QEMU 6+, KVM, D-Bus, `virtiofsd`, OpenSSH client,
+Install QEMU 6+, KVM, D-Bus, `virtiofsd` 1.10+, OpenSSH client,
 `cloud-image-utils`, curl, Node.js 22+, Rust 1.87+, Git, and Make. Confirm that
 `/dev/kvm` exists and is accessible to the account running AVM.
 
@@ -61,7 +61,7 @@ commands use it.
 
 ```sh
 target/release/avm capture --run "$RUN_CONFIG" --output /tmp/avm.png
-scripts/linux-smoke.sh "$RUN_CONFIG"
+AVM_BIN=target/release/avm scripts/linux-smoke.sh "$RUN_CONFIG"
 ```
 
 The smoke check succeeds only after QEMU provides a real framebuffer and the

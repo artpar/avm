@@ -78,6 +78,8 @@ gh release download --repo artpar/avm --pattern 'avm-*.tar.gz*'
 shasum -a 256 -c avm-*.tar.gz.sha256
 tar -xzf avm-*.tar.gz
 sudo install -m 0755 avm-v*-x86_64-unknown-linux-gnu/avm /usr/local/bin/avm
+sudo install -m 0755 avm-v*-x86_64-unknown-linux-gnu/scripts/linux-smoke.sh \
+  /usr/local/bin/avm-linux-smoke
 avm --version
 ```
 
@@ -131,7 +133,7 @@ Stop the nested guest when finished:
 avm stop --run "$RUN_CONFIG"
 ```
 
-Run `scripts/linux-smoke.sh "$RUN_CONFIG"` for the real framebuffer/input
+Run `avm-linux-smoke "$RUN_CONFIG"` for the real framebuffer/input
 acceptance check. See the [Getting Started wiki](https://github.com/artpar/avm/wiki/Getting-Started)
 for host setup and the [Operations wiki](https://github.com/artpar/avm/wiki/Operations)
 for reset, capture, history, replay, and cleanup.
