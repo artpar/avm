@@ -5,6 +5,13 @@ All notable changes to AVM are documented here. The project follows
 [Conventional Commits](https://www.conventionalcommits.org/) to automate version
 selection and release notes.
 
+## [0.2.1](https://github.com/artpar/avm/compare/v0.2.0...v0.2.1) (2026-08-15)
+
+
+### Bug Fixes
+
+* wait for inspector process identity in lifecycle test ([d0fb4ce](https://github.com/artpar/avm/commit/d0fb4ce7536e0e808487eeb47779b877fc2e8ddd))
+
 ## [0.2.0](https://github.com/artpar/avm/compare/v0.1.3...v0.2.0) (2026-08-15)
 
 
