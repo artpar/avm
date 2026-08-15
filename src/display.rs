@@ -999,8 +999,16 @@ fn us_keycode(c: char) -> Option<(u32, bool)> {
             0x1e, 0x30, 0x2e, 0x20, 0x12, 0x21, 0x22, 0x23, 0x17, 0x24, 0x25, 0x26, 0x32, 0x31,
             0x18, 0x19, 0x10, 0x13, 0x1f, 0x14, 0x16, 0x2f, 0x11, 0x2d, 0x15, 0x2c,
         ][(lower as u8 - b'a') as usize],
-        '1'..='9' => 0x02 + (lower as u32 - '1' as u32),
-        '0' => 0x0b,
+        '1' | '!' => 0x02,
+        '2' | '@' => 0x03,
+        '3' | '#' => 0x04,
+        '4' | '$' => 0x05,
+        '5' | '%' => 0x06,
+        '6' | '^' => 0x07,
+        '7' | '&' => 0x08,
+        '8' | '*' => 0x09,
+        '9' | '(' => 0x0a,
+        '0' | ')' => 0x0b,
         ' ' => 0x39,
         '-' | '_' => 0x0c,
         '=' | '+' => 0x0d,
@@ -1019,7 +1027,26 @@ fn us_keycode(c: char) -> Option<(u32, bool)> {
     let shift = c.is_ascii_uppercase()
         || matches!(
             c,
-            '_' | '+' | '{' | '}' | ':' | '"' | '~' | '|' | '<' | '>' | '?'
+            '!' | '@'
+                | '#'
+                | '$'
+                | '%'
+                | '^'
+                | '&'
+                | '*'
+                | '('
+                | ')'
+                | '_'
+                | '+'
+                | '{'
+                | '}'
+                | ':'
+                | '"'
+                | '~'
+                | '|'
+                | '<'
+                | '>'
+                | '?'
         );
     Some((code, shift))
 }
@@ -1073,11 +1100,18 @@ mod tests {
     use super::*;
     use crate::{event::MemoryEventSink, framebuffer::PIXMAN_X8R8G8B8};
     #[test]
-    fn maps_url_characters_to_xt_keyboard_codes() {
-        for c in "https://localhost:3000/a-b?x=1".chars() {
+    fn maps_all_printable_us_ascii_to_xt_keyboard_codes() {
+        for byte in 0x20_u8..=0x7e {
+            let c = char::from(byte);
+            assert!(us_keycode(c).is_some(), "missing mapping for {c:?}");
+        }
+        for c in "avm.discovery@example.test AVM-Discovery-2026!".chars() {
             assert!(us_keycode(c).is_some(), "missing mapping for {c:?}");
         }
         assert_eq!(us_keycode('A'), Some((0x1e, true)));
+        assert_eq!(us_keycode('!'), Some((0x02, true)));
+        assert_eq!(us_keycode('@'), Some((0x03, true)));
+        assert_eq!(us_keycode(')'), Some((0x0b, true)));
         assert_eq!(us_keycode('/'), Some((0x35, false)));
     }
 
