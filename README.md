@@ -116,6 +116,12 @@ avm status --run "$RUN_CONFIG"
 avm capture --run "$RUN_CONFIG" --output /tmp/current.png
 ```
 
+`start` always launches the run's read-only WebUI on a random loopback port and
+returns its URL as `webUi`; `status` reports the live URL. The inspector's
+default causal trace, switchable event table, and selected evidence panel expose
+the complete collected timeline without VM controls or mutation APIs. See the
+[human-interface guide](docs/human-interface.md).
+
 Interact through the real guest input path and inspect the durable record:
 
 ```sh
@@ -208,6 +214,12 @@ interfaces.
 `make help` lists the supported local workflow. `make ci` reproduces the GitHub
 quality gate: locked dependencies, formatting, Clippy with warnings denied,
 Rust tests, browser tests, MCP contracts, and experiment harness checks.
+
+AVM is developed with AVM: behavior-changing work is published into a fresh AVM
+guest and exercised under the latest trusted released supervisor. A candidate
+never supervises or attests itself, and unrelated active runs are not reused.
+See [Developing AVM with AVM](docs/avm-development.md). Project work is tracked
+canonically in [backlog.md](backlog.md).
 
 Releases are automated with Release Please. Conventional commits determine the
 next semantic version, and merging the generated release PR updates the Cargo

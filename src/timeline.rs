@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OpenFlags, params};
 use uuid::Uuid;
 
 use crate::{
@@ -101,6 +101,24 @@ impl TimelineStore {
              CREATE INDEX IF NOT EXISTS experience_events_source
                ON experience_events(session_id, source, host_monotonic_ns);",
         )?;
+        Ok(Self {
+            connection: Mutex::new(connection),
+        })
+    }
+
+    /// Open an existing timeline without creating files, changing pragmas, or
+    /// applying schema migrations. Inspector surfaces must use this path so a
+    /// read cannot alter the evidence it is presenting.
+    pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        let connection = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .with_context(|| format!("open timeline database read-only {}", path.display()))?;
+        connection
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .context("configure timeline read-lock timeout")?;
         Ok(Self {
             connection: Mutex::new(connection),
         })
@@ -266,5 +284,21 @@ mod tests {
         );
         assert_eq!(events[1], later);
         assert_eq!(store.event(earlier.id).unwrap(), Some(earlier));
+    }
+
+    #[test]
+    fn read_only_timeline_reads_but_refuses_records() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("timeline.sqlite3");
+        let session = Uuid::new_v4();
+        let event = RawEvent::observed_at(session, 10, "vm", "vm.started", json!({}));
+        TimelineStore::open(&path)
+            .unwrap()
+            .record(event.clone())
+            .unwrap();
+
+        let store = TimelineStore::open_read_only(&path).unwrap();
+        assert_eq!(store.event(event.id).unwrap(), Some(event.clone()));
+        assert!(store.record(event).is_err());
     }
 }

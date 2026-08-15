@@ -41,6 +41,7 @@ test-rust: ## Run all Rust tests
 
 test-node: ## Run browser observer tests
 	npm --prefix supervisor/browser test
+	node --test webui/app.test.mjs
 
 test-contracts: ## Run MCP and experiment contract tests
 	node supervisor/mcp/check.mjs

@@ -14,6 +14,10 @@ workspace.
 - [[Troubleshooting]] — diagnose common host, display, tunnel, and browser issues.
 - [[Releasing]] — versioning, release PRs, artifacts, and verification.
 
+The run WebUI starts automatically with `avm start`. It is a grayscale,
+read-only semantic timeline and artifact inspector; operational control remains
+in explicit CLI or MCP calls.
+
 The source of this wiki is versioned in the repository's `wiki/` directory and
 synchronized to GitHub Wiki after changes land on `main`.
 

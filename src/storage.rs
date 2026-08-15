@@ -26,6 +26,12 @@ impl ArtifactStore {
         Ok(Self { root })
     }
 
+    /// Open an existing artifact store without creating its directory tree.
+    pub fn open_read_only(root: impl AsRef<Path>) -> Result<Self> {
+        let root = root.as_ref().to_owned();
+        Ok(Self { root })
+    }
+
     pub fn put(&self, bytes: &[u8]) -> Result<String> {
         let digest = hex::encode(Sha256::digest(bytes));
         let artifact_ref = format!("{PREFIX}{digest}");
@@ -153,6 +159,20 @@ mod tests {
                 .to_string()
                 .contains("verification")
         );
+    }
+
+    #[test]
+    fn read_only_open_represents_an_empty_store_and_verifies_reads() {
+        let temp = tempfile::tempdir().unwrap();
+        let absent = temp.path().join("absent");
+        let empty = ArtifactStore::open_read_only(&absent).unwrap();
+        assert!(!absent.exists());
+        assert!(empty.read(&format!("sha256:{}", "0".repeat(64))).is_err());
+
+        let writable = ArtifactStore::new(temp.path()).unwrap();
+        let reference = writable.put(b"evidence").unwrap();
+        let read_only = ArtifactStore::open_read_only(temp.path()).unwrap();
+        assert_eq!(read_only.read(&reference).unwrap(), b"evidence");
     }
 
     fn make_writable(path: &Path) {

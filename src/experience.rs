@@ -39,6 +39,18 @@ pub struct Replay {
     pub keyframes: Vec<StoredFrame>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadOnlyFrame {
+    pub event_id: Uuid,
+    pub host_monotonic_ns: u64,
+    pub width: u32,
+    pub height: u32,
+    pub frame_sha256: String,
+    #[serde(skip)]
+    pub png: Vec<u8>,
+}
+
 impl ExperienceStore {
     pub fn open(
         session_id: Uuid,
@@ -49,6 +61,18 @@ impl ExperienceStore {
             session_id,
             timeline: TimelineStore::open(timeline_path)?,
             artifacts: ArtifactStore::new(artifact_root)?,
+        })
+    }
+
+    pub fn open_read_only(
+        session_id: Uuid,
+        timeline_path: impl AsRef<Path>,
+        artifact_root: impl AsRef<Path>,
+    ) -> Result<Self> {
+        Ok(Self {
+            session_id,
+            timeline: TimelineStore::open_read_only(timeline_path)?,
+            artifacts: ArtifactStore::open_read_only(artifact_root)?,
         })
     }
 
@@ -88,6 +112,22 @@ impl ExperienceStore {
             height: reconstructed.framebuffer.height(),
             frame_sha256: reconstructed.framebuffer.sha256(),
             artifact_ref,
+        })
+    }
+
+    /// Reconstruct a framebuffer without inserting a derived artifact into the
+    /// supervisor-owned store. The read-only WebUI uses this path so viewing a
+    /// run cannot mutate its evidence.
+    pub fn frame_read_only(&self, at_ns: u64) -> Result<ReadOnlyFrame> {
+        let events = self.timeline.all(self.session_id)?;
+        let reconstructed = reconstruct_frame(&events, &self.artifacts, at_ns)?;
+        Ok(ReadOnlyFrame {
+            event_id: reconstructed.event_id,
+            host_monotonic_ns: reconstructed.host_monotonic_ns,
+            width: reconstructed.framebuffer.width(),
+            height: reconstructed.framebuffer.height(),
+            frame_sha256: reconstructed.framebuffer.sha256(),
+            png: reconstructed.framebuffer.png_bytes()?,
         })
     }
 

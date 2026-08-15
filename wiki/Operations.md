@@ -17,6 +17,10 @@ avm reset --run "$RUN_CONFIG"
 avm stop --run "$RUN_CONFIG"
 ```
 
+Starting a run always starts its read-only WebUI on loopback. The `start` and
+`status` JSON include `webUi`; stopping or destroying the run stops the server.
+There is intentionally no separate user command and no control API in the UI.
+
 Use `destroy-run` only when its externally stored run state and overlay are no
 longer needed. Keep base images read-only.
 

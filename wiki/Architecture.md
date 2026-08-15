@@ -45,3 +45,11 @@ non-migratable virtiofs device, hot-adds the candidate mount, then resumes.
 Reset restarts paused QEMU, loads that snapshot, hot-adds virtiofs again, and
 resumes. Guest disk mutations do not survive reset; the externally managed
 candidate and evidence remain available.
+
+## Human interface boundary
+
+`avm start` launches an embedded, loopback-only inspector beside the supervisor.
+It opens the timeline database and artifact store read-only, verifies artifact
+content addresses, and reconstructs frames in memory. The browser surface has
+GET routes only and no guest-control or evidence-mutation API. It stops with the
+run; see the repository's `docs/webui-architecture.md` for details.

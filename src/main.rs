@@ -46,6 +46,7 @@ use avm::{
     timeline::{ExperienceEventSink, TimelineStore},
     vlm::{CommandVlmAdapter, CommandVlmConfig, DEFAULT_VLM_PROMPT, observe_temporal_event},
     vm::{RunConfig, VmController},
+    web::{inspector_endpoint, serve_inspector, start_inspector, stop_inspector},
 };
 use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::json;
@@ -357,6 +358,13 @@ enum Command {
         run: PathBuf,
     },
     #[command(hide = true)]
+    WebServe {
+        #[arg(long)]
+        run: PathBuf,
+        #[arg(long)]
+        instance_token: uuid::Uuid,
+    },
+    #[command(hide = true)]
     PrepareTransfer {
         #[arg(long)]
         run: PathBuf,
@@ -609,15 +617,39 @@ async fn main() -> Result<()> {
         Command::Start { run } => {
             let config = load_run(&run)?;
             lifecycle(&config, "vm.start.requested", json!({}))?;
-            VmController::new(config.clone()).start().await?;
+            let controller = VmController::new(config.clone());
+            controller.start().await?;
             lifecycle(&config, "vm.started", json!({}))?;
+            let inspector = match start_inspector(&config).await {
+                Ok(inspector) => inspector,
+                Err(error) => {
+                    let _ = lifecycle(
+                        &config,
+                        "webui.start.failed",
+                        json!({"message": error.to_string()}),
+                    );
+                    controller.stop().await.context(
+                        "WebUI failed to start and the newly started VM could not be stopped",
+                    )?;
+                    return Err(error.context("start mandatory AVM WebUI"));
+                }
+            };
+            println!(
+                "{}",
+                json!({"runId": config.id, "running": true, "webUi": inspector.url})
+            );
         }
         Command::Status { run } => {
             let config = load_run(&run)?;
             let running = VmController::new(config.clone()).is_running();
             println!(
                 "{}",
-                json!({"runId": config.id, "running": running, "stateDir": config.state_dir})
+                json!({
+                    "runId": config.id,
+                    "running": running,
+                    "stateDir": config.state_dir,
+                    "webUi": inspector_endpoint(&config).map(|endpoint| endpoint.url),
+                })
             );
         }
         Command::Reset { run } => {
@@ -659,6 +691,7 @@ async fn main() -> Result<()> {
         Command::Stop { run } => {
             let config = load_run(&run)?;
             lifecycle(&config, "vm.stop.requested", json!({}))?;
+            stop_inspector(&config)?;
             VmController::new(config.clone()).stop().await?;
             lifecycle(&config, "vm.stopped", json!({}))?;
         }
@@ -935,6 +968,10 @@ async fn main() -> Result<()> {
             expected_after_text,
         )?,
         Command::EventRelay { run } => serve_event_relay(&run)?,
+        Command::WebServe {
+            run,
+            instance_token,
+        } => serve_inspector(&run, instance_token).await?,
         Command::PrepareTransfer { run, transfer_id } => {
             println!("{}", prepare_transfer(&run, transfer_id)?.display());
         }
@@ -1103,6 +1140,7 @@ fn lifecycle(config: &RunConfig, kind: &str, payload: serde_json::Value) -> Resu
 
 async fn destroy_run(path: &Path) -> Result<()> {
     let config = load_run(path)?;
+    stop_inspector(&config)?;
     let controller = VmController::new(config.clone());
     if controller.is_running() {
         controller.stop().await?;

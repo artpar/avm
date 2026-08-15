@@ -19,6 +19,7 @@ pub mod temporal;
 pub mod timeline;
 pub mod vlm;
 pub mod vm;
+pub mod web;
 pub mod workspace_gate;
 
 #[cfg(unix)]

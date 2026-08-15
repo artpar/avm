@@ -57,6 +57,10 @@ target/release/avm status --run "$RUN_CONFIG"
 `RUN_CONFIG` is the path to the generated `run.json`. Preserve the path; most
 commands use it.
 
+`start` also starts the read-only human interface and prints its loopback
+`webUi` URL. It is an inspector for the semantic timeline and artifacts, not a
+VM control surface; `status` repeats the URL while it is live.
+
 ## 5. Prove display and input
 
 ```sh

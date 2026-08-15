@@ -21,6 +21,13 @@ make check
 is intentionally separate; see `vm/image/README.md` and run
 `scripts/linux-smoke.sh RUN_CONFIG` on a suitable host.
 
+Behavior-changing contributions must also follow the
+[AVM-on-AVM development loop](docs/avm-development.md): use a trusted released
+outer supervisor, publish the candidate into a fresh guest, and exercise the
+affected behavior through AVM. Do not repurpose an unrelated active run or let
+the candidate supervise itself. Record bootstrap exceptions and compensating
+verification in the pull request and [backlog.md](backlog.md).
+
 ## Changes and pull requests
 
 1. Open an issue first for changes to persisted schemas, the trust boundary, or
@@ -29,6 +36,8 @@ is intentionally separate; see `vm/image/README.md` and run
 3. Update user-facing documentation when commands or configuration change.
 4. Run `make check` and report any Linux/KVM checks that could not be run.
 5. Do not commit credentials, VM disks, run state, or private experiment data.
+6. Update `backlog.md`, the canonical work tracker, for completed and discovered
+   follow-up work.
 
 Commits use [Conventional Commits](https://www.conventionalcommits.org/):
 

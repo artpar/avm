@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>AVM Inspector</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#workspace">Skip to timeline</a>
+    <header class="app-bar">
+      <div class="identity">
+        <strong>AVM Inspector</strong>
+        <span class="read-only" aria-label="This inspector cannot change the run">Read-only</span>
+      </div>
+      <form class="query" role="search" id="query-form">
+        <label class="visually-hidden" for="query">Search timeline</label>
+        <span aria-hidden="true">⌕</span>
+        <input id="query" name="query" type="search" autocomplete="off"
+          placeholder="Search source, event kind, payload, hash, or event ID">
+        <kbd>/</kbd>
+      </form>
+      <div class="run-identity mono" id="run-identity" aria-label="Run identity">Loading run…</div>
+    </header>
+
+    <main id="workspace" class="workspace" tabindex="-1">
+      <aside class="sources-panel" aria-labelledby="sources-title">
+        <div class="panel-heading">
+          <h1 id="sources-title">Sources</h1>
+          <button class="text-button" id="clear-sources" type="button">All</button>
+        </div>
+        <div id="source-list" class="source-list" aria-live="polite"></div>
+        <div class="legend" aria-labelledby="relationship-title">
+          <h2 id="relationship-title">Relationship basis</h2>
+          <div><span class="line solid"></span><span>Recorded reference</span></div>
+          <div><span class="line dashed"></span><span>Shared artifact</span></div>
+        </div>
+        <dl class="run-facts" id="run-facts"></dl>
+      </aside>
+
+      <section class="main-stage" aria-label="Timeline inspection workspace">
+        <div class="trace-toolbar">
+          <div class="segmented" role="group" aria-label="Timeline perspective">
+            <button type="button" id="trace-view-button" aria-pressed="true">Trace</button>
+            <button type="button" id="table-view-button" aria-pressed="false">Events</button>
+          </div>
+          <div class="provenance-filter" role="group" aria-label="Provenance filter">
+            <button type="button" data-provenance="observed" aria-pressed="true">Raw</button>
+            <button type="button" data-provenance="derived" aria-pressed="true">Derived</button>
+            <button type="button" data-provenance="model_interpreted" aria-pressed="true">Model</button>
+            <button type="button" data-provenance="agent_claim" aria-pressed="true">Claim</button>
+          </div>
+          <span class="result-state" id="result-state" role="status">Loading events…</span>
+        </div>
+
+        <div class="timeline-shell" id="timeline-shell">
+          <section id="trace-view" class="trace-view" aria-label="Causal trace">
+            <div class="time-ruler" id="time-ruler" aria-hidden="true"></div>
+            <div class="lanes" id="lanes"></div>
+            <svg class="relations" id="relations" aria-hidden="true"></svg>
+          </section>
+
+          <section id="table-view" class="table-view" aria-label="Chronological event table" hidden>
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Time</th>
+                  <th scope="col">Δt</th>
+                  <th scope="col">Source</th>
+                  <th scope="col">Event kind</th>
+                  <th scope="col">Summary</th>
+                  <th scope="col">Provenance</th>
+                </tr>
+              </thead>
+              <tbody id="event-rows"></tbody>
+            </table>
+          </section>
+
+          <section class="empty-state" id="empty-state" hidden>
+            <h2>No matching events</h2>
+            <p>The run is intact. Clear a source or provenance filter, or broaden the search.</p>
+            <button type="button" id="clear-filters">Clear filters</button>
+          </section>
+        </div>
+
+        <section class="evidence" id="evidence" aria-labelledby="evidence-title">
+          <header class="evidence-heading">
+            <div>
+              <span class="section-label">Evidence</span>
+              <h2 id="evidence-title">Select an event</h2>
+            </div>
+            <span class="mono" id="selected-time">—</span>
+          </header>
+          <div class="evidence-tabs" role="tablist" aria-label="Selected event evidence">
+            <button role="tab" type="button" aria-selected="true" aria-controls="evidence-summary" id="tab-summary">Summary</button>
+            <button role="tab" type="button" aria-selected="false" aria-controls="evidence-frame" id="tab-frame" tabindex="-1">Frame</button>
+            <button role="tab" type="button" aria-selected="false" aria-controls="evidence-payload" id="tab-payload" tabindex="-1">Payload</button>
+            <button role="tab" type="button" aria-selected="false" aria-controls="evidence-artifacts" id="tab-artifacts" tabindex="-1">Artifacts</button>
+            <button role="tab" type="button" aria-selected="false" aria-controls="evidence-provenance" id="tab-provenance" tabindex="-1">Provenance</button>
+          </div>
+          <div class="evidence-body">
+            <div role="tabpanel" id="evidence-summary" aria-labelledby="tab-summary"></div>
+            <div role="tabpanel" id="evidence-frame" aria-labelledby="tab-frame" hidden></div>
+            <div role="tabpanel" id="evidence-payload" aria-labelledby="tab-payload" hidden></div>
+            <div role="tabpanel" id="evidence-artifacts" aria-labelledby="tab-artifacts" hidden></div>
+            <div role="tabpanel" id="evidence-provenance" aria-labelledby="tab-provenance" hidden></div>
+          </div>
+        </section>
+
+        <section class="overview" aria-labelledby="overview-title">
+          <div class="overview-heading">
+            <h2 id="overview-title">Collection density</h2>
+            <span id="overview-range" class="mono">—</span>
+          </div>
+          <div class="density" id="density" aria-label="Event density across the complete run"></div>
+          <div class="overview-axis mono" id="overview-axis"></div>
+        </section>
+      </section>
+    </main>
+    <footer class="status-bar">
+      <span id="selection-status">No event selected</span>
+      <span class="keyboard-help"><kbd>←</kbd><kbd>→</kbd> event · <kbd>T</kbd> trace · <kbd>A</kbd> events · <kbd>P</kbd> evidence</span>
+      <span id="integrity-status">Artifacts verified when opened</span>
+    </footer>
+    <div id="announcer" class="visually-hidden" aria-live="polite"></div>
+  </body>
+</html>
