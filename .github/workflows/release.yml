@@ -12,6 +12,7 @@ on:
         type: string
 
 permissions:
+  actions: write
   contents: write
   pull-requests: write
   attestations: write
@@ -31,6 +32,15 @@ jobs:
         if: github.ref_type != 'tag' && inputs.release_tag == ''
         id: release
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+
+      - name: Run CI for the semantic release pull request
+        if: steps.release.outputs.prs_created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_PR: ${{ steps.release.outputs.pr }}
+        run: |
+          release_branch=$(jq -er '.headBranchName' <<<"$RELEASE_PR")
+          gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$release_branch"
 
       - name: Create the initial draft release
         if: github.ref_type == 'tag' || inputs.release_tag != ''
