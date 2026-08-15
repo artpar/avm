@@ -53,6 +53,7 @@ test-contracts: ## Run MCP and experiment contract tests
 
 test-scripts: ## Validate release-facing shell helpers
 	bash scripts/linux-smoke.test.sh
+	python3 vm/guest/avm-accessibility-sensor.test.py
 
 test: test-rust test-node test-contracts test-scripts ## Run the complete test suite
 
