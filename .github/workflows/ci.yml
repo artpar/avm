@@ -37,7 +37,7 @@ jobs:
         run: make ci
 
       - name: Validate shell syntax
-        run: bash -n vm/image/build-base.sh scripts/linux-smoke.sh scripts/qemu-protocol-smoke.sh
+        run: bash -n vm/image/build-base.sh scripts/linux-smoke.sh scripts/linux-webgl-smoke.sh scripts/qemu-protocol-smoke.sh
 
   dependency-review:
     name: Dependency review

@@ -12,10 +12,14 @@ MAX_TREE_NODES = 500
 MAX_TREE_DEPTH = 10
 MAX_TEXT_CHARACTERS = 4096
 MAX_LINE_BYTES = 900_000
+COMMAND_RETRY_MS = 1_000
+COMMAND_IO_CONDITIONS = GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR | GLib.IO_NVAL
 
 output = None
 command_buffer = b""
 connected = False
+command_watch_id = None
+command_retry_id = None
 
 
 def source_timestamp():
@@ -228,18 +232,45 @@ def readiness_heartbeat():
     return True
 
 
+def arm_command_watch():
+    global command_retry_id, command_watch_id
+    command_retry_id = None
+    if command_watch_id is None:
+        command_watch_id = GLib.io_add_watch(
+            output.fileno(), COMMAND_IO_CONDITIONS, on_command
+        )
+    return False
+
+
+def schedule_command_watch():
+    global command_retry_id
+    if command_retry_id is None:
+        command_retry_id = GLib.timeout_add(COMMAND_RETRY_MS, arm_command_watch)
+
+
+def disconnect_command_source():
+    global command_buffer, connected, command_watch_id
+    connected = False
+    command_buffer = b""
+    command_watch_id = None
+    schedule_command_watch()
+    return False
+
+
 def on_command(source, condition):
     global command_buffer, connected
+    if not condition & GLib.IO_IN:
+        return disconnect_command_source()
     try:
         incoming = os.read(source, 65536)
     except BlockingIOError:
+        if condition & (GLib.IO_HUP | GLib.IO_ERR | GLib.IO_NVAL):
+            return disconnect_command_source()
         return True
     except OSError:
-        connected = False
-        return True
+        return disconnect_command_source()
     if not incoming:
-        connected = False
-        return True
+        return disconnect_command_source()
     command_buffer += incoming
     while b"\n" in command_buffer:
         line, command_buffer = command_buffer.split(b"\n", 1)
@@ -248,6 +279,8 @@ def on_command(source, condition):
             connected = True
             emit_ready(False)
             initial_snapshot()
+    if condition & (GLib.IO_HUP | GLib.IO_ERR | GLib.IO_NVAL):
+        return disconnect_command_source()
     return True
 
 
@@ -280,7 +313,7 @@ def main():
         "focus:",
     ):
         pyatspi.Registry.registerEventListener(on_event, event_type)
-    GLib.io_add_watch(output.fileno(), GLib.IO_IN, on_command)
+    arm_command_watch()
     GLib.timeout_add_seconds(5, readiness_heartbeat)
     pyatspi.Registry.start()
 

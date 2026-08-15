@@ -80,6 +80,14 @@ tar -xzf avm-*.tar.gz
 sudo install -m 0755 avm-v*-x86_64-unknown-linux-gnu/avm /usr/local/bin/avm
 sudo install -m 0755 avm-v*-x86_64-unknown-linux-gnu/scripts/linux-smoke.sh \
   /usr/local/bin/avm-linux-smoke
+sudo install -m 0755 avm-v*-x86_64-unknown-linux-gnu/scripts/linux-webgl-smoke.sh \
+  /usr/local/bin/avm-linux-webgl-smoke
+sudo install -d /usr/local/libexec/avm /usr/local/share/avm/fixtures/webgl2
+sudo install -m 0755 avm-v*-x86_64-unknown-linux-gnu/scripts/png-region-check.py \
+  /usr/local/libexec/avm/png-region-check.py
+sudo install -m 0644 avm-v*-x86_64-unknown-linux-gnu/fixtures/webgl2/index.html \
+  avm-v*-x86_64-unknown-linux-gnu/fixtures/webgl2/app.js \
+  /usr/local/share/avm/fixtures/webgl2/
 avm --version
 ```
 
@@ -140,7 +148,8 @@ avm stop --run "$RUN_CONFIG"
 ```
 
 Run `avm-linux-smoke "$RUN_CONFIG"` for the real framebuffer/input
-acceptance check. See the [Getting Started wiki](https://github.com/artpar/avm/wiki/Getting-Started)
+acceptance check and `avm-linux-webgl-smoke "$RUN_CONFIG"` for the software
+WebGL2 browser/framebuffer qualification. See the [Getting Started wiki](https://github.com/artpar/avm/wiki/Getting-Started)
 for host setup and the [Operations wiki](https://github.com/artpar/avm/wiki/Operations)
 for reset, capture, history, replay, and cleanup.
 

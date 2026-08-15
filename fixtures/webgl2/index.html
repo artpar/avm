@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AVM_WEBGL2_PENDING</title>
+    <style>
+      html, body, canvas { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+      body { background: #600; color: white; font: 16px/1.4 monospace; }
+      canvas { display: block; }
+      output {
+        position: fixed;
+        top: 12px;
+        left: 12px;
+        padding: 8px 10px;
+        background: rgb(0 0 0 / 75%);
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="surface"></canvas>
+    <output id="status">requesting WebGL2</output>
+    <script src="app.js"></script>
+  </body>
+</html>
