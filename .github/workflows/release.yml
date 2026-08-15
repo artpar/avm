@@ -30,7 +30,7 @@ jobs:
       - name: Open or update the semantic release pull request
         if: github.ref_type != 'tag' && inputs.release_tag == ''
         id: release
-        uses: googleapis/release-please-action@8b8fd2cc23b2e18957157a9d923d75aa0c6f6ad5 # v4
+        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4
 
       - name: Create the initial draft release
         if: github.ref_type == 'tag' || inputs.release_tag != ''
