@@ -153,27 +153,15 @@ impl RemoteChannelConfig {
         let transfers = self.state_dir.join("transfers");
         std::fs::create_dir_all(&transfers)?;
         let archive = transfers.join(format!("{transfer_id}.tar"));
+        let file_list = transfers.join(format!("{transfer_id}.files"));
         sink.record(RawEvent::observed(
             session_id,
             "transport",
             "remote.workspace_publish.started",
             json!({"channelId": self.id, "transferId": transfer_id}),
         ))?;
-        let status = Command::new("tar")
-            .env("COPYFILE_DISABLE", "1")
-            .args(["-C"])
-            .arg(&self.local_candidate)
-            .args([
-                "--exclude=./.git",
-                "--exclude=./._*",
-                "--exclude=./.DS_Store",
-                "-cf",
-            ])
-            .arg(&archive)
-            .arg(".")
-            .status()
-            .context("create workspace transfer archive")?;
-        ensure!(status.success(), "tar failed with {status}");
+        let (source_fingerprint, file_count) =
+            create_git_workspace_archive(&self.local_candidate, &archive, &file_list)?;
         let digest = file_sha256(&archive)?;
         let prepare = self.remote_command(&[
             "prepare-transfer".into(),
@@ -224,7 +212,9 @@ impl RemoteChannelConfig {
                 "channelId": self.id,
                 "transferId": transfer_id,
                 "archiveSha256": digest,
-                "repositoryFingerprint": fingerprint,
+                "fileCount": file_count,
+                "sourceRepositoryFingerprint": source_fingerprint,
+                "materializedRepositoryFingerprint": fingerprint,
             }),
         ))?;
         Ok(fingerprint)
@@ -246,6 +236,113 @@ impl RemoteChannelConfig {
         );
         Ok(output)
     }
+}
+
+fn create_git_workspace_archive(
+    repository: &Path,
+    archive: &Path,
+    file_list: &Path,
+) -> Result<(String, usize)> {
+    let before = repository_fingerprint(repository)?;
+    let file_count = write_git_transfer_list(repository, file_list)?;
+    let status = Command::new("tar")
+        .env("COPYFILE_DISABLE", "1")
+        .args(["-C"])
+        .arg(repository)
+        .args(["--null", "--files-from"])
+        .arg(file_list)
+        .args(["--no-recursion", "-cf"])
+        .arg(archive)
+        .status()
+        .context("create workspace transfer archive");
+    let _ = std::fs::remove_file(file_list);
+    let status = status?;
+    ensure!(status.success(), "tar failed with {status}");
+    let after = repository_fingerprint(repository)?;
+    if before != after {
+        let _ = std::fs::remove_file(archive);
+    }
+    ensure!(
+        before == after,
+        "candidate changed while the remote transfer archive was created"
+    );
+    Ok((before, file_count))
+}
+
+fn write_git_transfer_list(repository: &Path, output: &Path) -> Result<usize> {
+    let top_level = git_output(repository, &["rev-parse", "--show-toplevel"])
+        .context("remote publishing requires a Git worktree")?;
+    let top_level = PathBuf::from(String::from_utf8(top_level)?.trim()).canonicalize()?;
+    ensure!(
+        top_level == repository.canonicalize()?,
+        "remote candidate must be the root of its Git worktree"
+    );
+    let staged = git_output(repository, &["ls-files", "--stage", "-z"])?;
+    ensure!(
+        !staged
+            .split(|byte| *byte == 0)
+            .any(|entry| entry.starts_with(b"160000 ")),
+        "remote publishing does not yet support Git submodules"
+    );
+    let listed = git_output(
+        repository,
+        &[
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ],
+    )?;
+    let mut writer = BufWriter::new(File::create(output)?);
+    let mut count = 0;
+    for relative in listed
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+    {
+        #[cfg(unix)]
+        let relative_path = {
+            use std::os::unix::ffi::OsStrExt;
+            Path::new(std::ffi::OsStr::from_bytes(relative))
+        };
+        #[cfg(not(unix))]
+        let relative_path = Path::new(std::str::from_utf8(relative)?);
+        ensure!(
+            !relative_path.is_absolute()
+                && !relative_path.components().any(|component| {
+                    matches!(
+                        component,
+                        std::path::Component::ParentDir
+                            | std::path::Component::RootDir
+                            | std::path::Component::Prefix(_)
+                    )
+                }),
+            "Git returned a path outside the candidate"
+        );
+        if std::fs::symlink_metadata(repository.join(relative_path)).is_ok() {
+            writer.write_all(relative)?;
+            writer.write_all(&[0])?;
+            count += 1;
+        }
+    }
+    writer.flush()?;
+    Ok(count)
+}
+
+fn git_output(repository: &Path, arguments: &[&str]) -> Result<Vec<u8>> {
+    let listed = Command::new("git")
+        .arg("-C")
+        .arg(repository)
+        .args(arguments)
+        .output()
+        .with_context(|| format!("run git {}", arguments.join(" ")))?;
+    ensure!(
+        listed.status.success(),
+        "git {} failed: {}",
+        arguments.join(" "),
+        String::from_utf8_lossy(&listed.stderr).trim()
+    );
+    Ok(listed.stdout)
 }
 
 pub struct TeeEventSink {
@@ -542,5 +639,79 @@ mod tests {
     #[test]
     fn shell_quote_handles_spaces_and_apostrophes() {
         assert_eq!(shell_quote(Path::new("/tmp/a b'c")), "'/tmp/a b'\\''c'");
+    }
+
+    #[test]
+    fn transfer_archive_contains_only_git_visible_files() {
+        let repository = tempfile::tempdir().unwrap();
+        git(repository.path(), &["init", "-q"]);
+        git(
+            repository.path(),
+            &["config", "user.email", "test@example.invalid"],
+        );
+        git(repository.path(), &["config", "user.name", "AVM Test"]);
+        std::fs::write(
+            repository.path().join(".gitignore"),
+            ".local/\nnode_modules/\n",
+        )
+        .unwrap();
+        std::fs::write(repository.path().join("tracked.txt"), "tracked\n").unwrap();
+        std::fs::write(repository.path().join("-leading.txt"), "leading\n").unwrap();
+        std::fs::create_dir(repository.path().join(".local")).unwrap();
+        std::fs::write(
+            repository.path().join(".local/secrets.env"),
+            "TOKEN=secret\n",
+        )
+        .unwrap();
+        std::fs::create_dir(repository.path().join("node_modules")).unwrap();
+        std::fs::write(repository.path().join("node_modules/large.js"), "ignored\n").unwrap();
+        git(
+            repository.path(),
+            &["add", "--", ".gitignore", "tracked.txt"],
+        );
+        git(repository.path(), &["commit", "-qm", "base"]);
+
+        let transfer = tempfile::tempdir().unwrap();
+        let archive = transfer.path().join("candidate.tar");
+        let file_list = transfer.path().join("candidate.files");
+        let (_fingerprint, count) =
+            create_git_workspace_archive(repository.path(), &archive, &file_list).unwrap();
+        assert_eq!(count, 3);
+        let listing = Command::new("tar")
+            .args(["-tf"])
+            .arg(&archive)
+            .output()
+            .unwrap();
+        assert!(listing.status.success());
+        let listing = String::from_utf8(listing.stdout).unwrap();
+        assert!(listing.lines().any(|path| path == ".gitignore"));
+        assert!(listing.lines().any(|path| path == "tracked.txt"));
+        assert!(listing.lines().any(|path| path == "-leading.txt"));
+        assert!(!listing.contains("secrets.env"));
+        assert!(!listing.contains("node_modules"));
+        assert!(!file_list.exists());
+    }
+
+    #[test]
+    fn transfer_archive_fails_closed_outside_a_git_root() {
+        let repository = tempfile::tempdir().unwrap();
+        let transfer = tempfile::tempdir().unwrap();
+        let error = create_git_workspace_archive(
+            repository.path(),
+            &transfer.path().join("candidate.tar"),
+            &transfer.path().join("candidate.files"),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("Git worktree"));
+    }
+
+    fn git(repository: &Path, arguments: &[&str]) {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(repository)
+            .args(arguments)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {}", arguments.join(" "));
     }
 }
