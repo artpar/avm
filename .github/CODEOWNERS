@@ -1,0 +1,7 @@
+* @artpar
+
+/.github/ @artpar
+/Cargo.lock @artpar
+/Cargo.toml @artpar
+/src/policy.rs @artpar
+/src/workspace_gate.rs @artpar
