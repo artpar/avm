@@ -32,7 +32,7 @@ const tools=[
   tool('avm_query','Query recorded experience using a canonical timeline event ID returned by avm_history or avm_experience. Each query kind documents the required anchor source.',{query:experienceQuerySchema()},['query']),
   tool('avm_accessibility','Observe a fresh native accessibility tree and events.',{durationMs:{type:'integer',minimum:1,maximum:60000}}),
   tool('avm_browser_observe','Record CDP browser, network, console, performance, screenshot, and trace evidence. Use start before guest actions and finish afterward to correlate them.',{
-    mode:{type:'string',enum:['once','start','finish']},durationMs:{type:'integer',minimum:1,maximum:60000},observationId:{type:'string'}
+    mode:{type:'string',enum:['once','start','finish']},durationMs:{type:'integer',minimum:1,maximum:120000},observationId:{type:'string'}
   })
 ];
 if(config.localAvm&&config.remoteChannel)tools.push(tool('avm_publish','Publish the current fingerprinted local candidate through the fixed AVM remote channel.',{}));
@@ -79,23 +79,43 @@ async function browserObserve(args){
   const mode=args.mode||'once';
   if(mode==='once')return text(await runAvm(browserObserveArgs(args.durationMs||5000)));
   if(mode==='start'){
+    const priorStarts=await recentBrowserObserverStarts();
     const observationId=crypto.randomUUID();
-    const result=runAvm(browserObserveArgs(args.durationMs||30000)).then(output=>({output}),error=>({error}));
-    browserObservations.set(observationId,result);
-    return text(JSON.stringify({observationId,status:'recording'}));
+    const pending={done:false,result:null,promise:null};
+    pending.promise=runAvm(browserObserveArgs(args.durationMs||90000)).then(output=>({output}),error=>({error})).then(result=>{pending.done=true;pending.result=result;return result});
+    browserObservations.set(observationId,pending);
+    await waitForBrowserObserverStart(priorStarts,pending);
+    return text(JSON.stringify({observationId,status:'recording',ready:true}));
   }
   if(mode==='finish'){
     if(typeof args.observationId!=='string'||!args.observationId)throw new Error('finish requires observationId');
     const pending=browserObservations.get(args.observationId);
     if(!pending)throw new Error(`unknown browser observation ${args.observationId}`);
     browserObservations.delete(args.observationId);
-    const result=await pending;
+    const result=await pending.promise;
     if(result.error)throw result.error;
     return text(result.output);
   }
   throw new Error(`unsupported browser observation mode ${mode}`);
 }
 function browserObserveArgs(durationMs){return['browser-observe','--run',config.remoteRun,'--endpoint',config.browserEndpoint||'http://127.0.0.1:9222','--script',config.remoteBrowserScript||'/home/artpar/avm/supervisor/browser/observer.mjs','--duration-ms',integer(durationMs)]}
+async function recentBrowserObserverStarts(){
+  const output=await runAvm(['history','--run',config.remoteRun,'--last-duration-ms','120000','--source','browser']);
+  const history=JSON.parse(output);
+  return new Set((history.events||[]).filter(event=>event.kind==='browser.observer.started').map(event=>event.id));
+}
+async function waitForBrowserObserverStart(priorStarts,pending){
+  const deadline=Date.now()+30000;
+  while(Date.now()<deadline){
+    if(pending.done){if(pending.result.error)throw pending.result.error;throw new Error('browser observer completed before becoming ready')}
+    await new Promise(resolveWait=>setTimeout(resolveWait,500));
+    try{
+      const starts=await recentBrowserObserverStarts();
+      if([...starts].some(id=>!priorStarts.has(id)))return;
+    }catch(error){if(Date.now()>=deadline)throw error}
+  }
+  throw new Error('timed out waiting for browser observer readiness');
+}
 async function act(args){
   const action=String(args.action||'');const button=args.button||'left';
   if(action==='move_pointer')return runAvm(['act-pointer','--run',config.remoteRun,'--x',requiredInteger(args,'x'),'--y',requiredInteger(args,'y')]);
