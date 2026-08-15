@@ -247,12 +247,15 @@ fn create_git_workspace_archive(
     let file_count = write_git_transfer_list(repository, file_list)?;
     let status = Command::new("tar")
         .env("COPYFILE_DISABLE", "1")
-        .args(["-C"])
+        // Keep every option before the file-list operand. BSD tar tolerates
+        // positional options here, while GNU tar rejects them; AVM development
+        // must produce the same bounded archive on both hosts.
+        .args(["--null", "--no-recursion", "-C"])
         .arg(repository)
-        .args(["--null", "--files-from"])
-        .arg(file_list)
-        .args(["--no-recursion", "-cf"])
+        .arg("-cf")
         .arg(archive)
+        .arg("--files-from")
+        .arg(file_list)
         .status()
         .context("create workspace transfer archive");
     let _ = std::fs::remove_file(file_list);
