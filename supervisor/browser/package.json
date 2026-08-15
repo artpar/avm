@@ -6,6 +6,6 @@
     "test": "node --test observer.test.mjs"
   },
   "dependencies": {
-    "playwright-core": "1.59.1"
+    "playwright-core": "1.62.1"
   }
 }
