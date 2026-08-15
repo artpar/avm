@@ -54,6 +54,7 @@ test-contracts: ## Run MCP and experiment contract tests
 
 test-scripts: ## Validate release-facing shell helpers
 	bash scripts/linux-smoke.test.sh
+	bash vm/image/wait-for-provisioning.test.sh
 	python3 vm/guest/avm-accessibility-sensor.test.py
 	python3 scripts/png-region-check.test.py
 	python3 vm/image/guest-config.test.py
@@ -96,7 +97,8 @@ package: release ## Create a checksummed release archive for the host target
 		"$(PACKAGE_DIR)/avm-v$(VERSION)-$(TARGET)/scripts/"
 	cp fixtures/webgl2/index.html fixtures/webgl2/app.js \
 		"$(PACKAGE_DIR)/avm-v$(VERSION)-$(TARGET)/fixtures/webgl2/"
-	cp vm/image/build-base.sh vm/image/meta-data.yaml vm/image/README.md \
+	cp vm/image/build-base.sh vm/image/wait-for-provisioning.sh \
+		vm/image/meta-data.yaml vm/image/README.md \
 		vm/image/ubuntu-noble-amd64.lock vm/image/user-data.yaml \
 		"$(PACKAGE_DIR)/avm-v$(VERSION)-$(TARGET)/vm/image/"
 	cp vm/guest/avm-accessibility-sensor.py \
