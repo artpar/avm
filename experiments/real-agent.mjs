@@ -44,6 +44,7 @@ if (preflight) {
       const started = JSON.parse(mcpText(await call('avm_browser_observe', { mode: 'start', durationMs: 30000 })));
       await call('avm_act', { action: 'key_press', keycode: 49 });
       await call('avm_act', { action: 'type_text', text: 'AVM overlap preflight' });
+      for (let index = 0; index < 4; index += 1) await call('avm_act', { action: 'key_press', keycode: 15 });
       await call('avm_act', { action: 'key_press', keycode: 28 });
       return JSON.parse(mcpText(await call('avm_browser_observe', { mode: 'finish', observationId: started.observationId })));
     });
