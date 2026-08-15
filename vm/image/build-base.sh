@@ -63,24 +63,8 @@ qemu-system-x86_64 \
   -daemonize -pidfile "$output_dir/build-qemu.pid" -D "$build_log"
 build_pid=$(<"$output_dir/build-qemu.pid")
 
-ready=false
-for _attempt in $(seq 1 180); do
-  if ssh -o BatchMode=yes -o ConnectTimeout=2 -o StrictHostKeyChecking=no \
-      -o UserKnownHostsFile=/dev/null -i "$ssh_key" -p 22222 avm@127.0.0.1 \
-      'test -f /var/lib/avm-image-ready' 2>/dev/null; then
-    ready=true
-    break
-  fi
-  sleep 2
-done
-if [[ "$ready" != true ]]; then
-  echo "guest provisioning did not become ready; see $build_log" >&2
-  exit 1
-fi
-
-ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no \
-  -o UserKnownHostsFile=/dev/null -i "$ssh_key" -p 22222 avm@127.0.0.1 \
-  'cloud-init status --wait'
+"$script_dir/wait-for-provisioning.sh" \
+  "$ssh_key" "$build_pid" "$guest_serial_log" "$build_log"
 
 ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no \
   -o UserKnownHostsFile=/dev/null -i "$ssh_key" -p 22222 avm@127.0.0.1 \
