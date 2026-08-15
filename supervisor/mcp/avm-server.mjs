@@ -29,7 +29,7 @@ const tools=[
   tool('avm_type','Type text through the real guest keyboard.',{text:{type:'string',maxLength:4096}},['text']),
   tool('avm_key','Send one Linux input keycode through QEMU.',{keycode:{type:'integer',minimum:0,maximum:767},mode:{type:'string',enum:['press','down','up']}},['keycode']),
   tool('avm_history','Read recorded cross-source history.',{lastDurationMs:{type:'integer',minimum:1},source:{type:'array',items:{type:'string'}}}),
-  tool('avm_query','Query recorded experience. Kinds: aroundEvent, networkFrames, visibleWhilePointerDown, browserElementUnderPointer, evidenceSinceFingerprint, beforeConsoleException, lastDialog, richerVisualEvidence, runtimeTrace.',{query:{type:'object',properties:{kind:{type:'string',enum:['aroundEvent','networkFrames','visibleWhilePointerDown','browserElementUnderPointer','evidenceSinceFingerprint','beforeConsoleException','lastDialog','richerVisualEvidence','runtimeTrace']}},required:['kind'],additionalProperties:true}},['query']),
+  tool('avm_query','Query recorded experience using a canonical timeline event ID returned by avm_history or avm_experience. Each query kind documents the required anchor source.',{query:experienceQuerySchema()},['query']),
   tool('avm_accessibility','Observe a fresh native accessibility tree and events.',{durationMs:{type:'integer',minimum:1,maximum:60000}}),
   tool('avm_browser_observe','Record CDP browser, network, console, performance, screenshot, and trace evidence. Use start before guest actions and finish afterward to correlate them.',{
     mode:{type:'string',enum:['once','start','finish']},durationMs:{type:'integer',minimum:1,maximum:60000},observationId:{type:'string'}
@@ -42,6 +42,22 @@ const browserObservations=new Map();
 for await(const line of lines){if(!line.trim())continue;let request;try{request=JSON.parse(line)}catch{continue}if(request.id===undefined)continue;try{let result;if(request.method==='initialize')result={protocolVersion:request.params?.protocolVersion||'2025-06-18',capabilities:{tools:{listChanged:false}},serverInfo:{name:'avm-workstation',version:'1'}};else if(request.method==='tools/list')result={tools};else if(request.method==='tools/call')result=await callTool(request.params?.name,request.params?.arguments||{});else throw new Error(`unsupported method ${request.method}`);send({jsonrpc:'2.0',id:request.id,result})}catch(error){send({jsonrpc:'2.0',id:request.id,result:{content:[{type:'text',text:error.message}],isError:true}})}}
 
 function tool(name,description,properties,required=[]){return{name,description,inputSchema:{type:'object',properties,required,additionalProperties:false}}}
+function experienceQuerySchema(){
+  const eventId=description=>({type:'string',format:'uuid',description});
+  const milliseconds={type:'integer',minimum:0};
+  const variant=(kind,properties,required=[])=>({type:'object',properties:{kind:{const:kind},...properties},required:['kind',...required],additionalProperties:false});
+  return{oneOf:[
+    variant('aroundEvent',{eventId:eventId('Any canonical timeline event UUID from history.'),beforeMs:milliseconds,afterMs:milliseconds},['eventId']),
+    variant('networkFrames',{eventId:eventId('A browser.network.request or browser.network.response event UUID from history.')},['eventId']),
+    variant('visibleWhilePointerDown',{eventId:eventId('An input pointer.down event UUID from history.')},['eventId']),
+    variant('browserElementUnderPointer',{eventId:eventId('An input event UUID whose payload contains numeric x and y coordinates.')},['eventId']),
+    variant('evidenceSinceFingerprint',{repositoryFingerprint:{type:'string',minLength:1,description:'Exact repository fingerprint returned by AVM history, observation, or publish.'}},['repositoryFingerprint']),
+    variant('beforeConsoleException',{eventId:eventId('A browser console/exception event UUID from history.'),beforeMs:milliseconds},['eventId']),
+    variant('lastDialog',{text:{type:['string','null'],description:'Optional accessible dialog text filter.'}}),
+    variant('richerVisualEvidence',{eventId:eventId('Any canonical timeline event UUID from history.'),beforeMs:milliseconds,afterMs:milliseconds,maxFrames:{type:'integer',minimum:1,maximum:100}},['eventId']),
+    variant('runtimeTrace',{eventId:eventId('A runtime telemetry event UUID containing a traceId, from history.'),beforeMs:milliseconds,afterMs:milliseconds},['eventId']),
+  ]};
+}
 function send(value){process.stdout.write(`${JSON.stringify(value)}\n`)}
 function validateConfig(value){for(const key of ['project','zone','instance','remoteAvm','remoteRun'])if(typeof value[key]!=='string'||!value[key])throw new Error(`config missing ${key}`);for(const key of ['project','zone','instance'])if(!/^[a-zA-Z0-9._-]+$/.test(value[key]))throw new Error(`unsafe ${key}`);for(const key of ['remoteAvm','remoteRun'])if(!value[key].startsWith('/')||/[\n\r\0]/.test(value[key]))throw new Error(`unsafe ${key}`)}
 function shellQuote(value){return `'${String(value).replaceAll("'","'\\''")}'`}
