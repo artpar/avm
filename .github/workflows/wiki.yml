@@ -1,0 +1,43 @@
+name: Wiki
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - wiki/**
+      - .github/workflows/wiki.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wiki
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    name: Publish source-controlled wiki
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Synchronize GitHub Wiki
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          wiki_dir="$(mktemp -d)"
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.wiki.git" "$wiki_dir"
+          find "$wiki_dir" -maxdepth 1 -type f -name '*.md' -delete
+          cp wiki/*.md "$wiki_dir/"
+          git -C "$wiki_dir" config user.name "github-actions[bot]"
+          git -C "$wiki_dir" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "$wiki_dir" add --all
+          if git -C "$wiki_dir" diff --cached --quiet; then
+            echo "Wiki is already current."
+          else
+            git -C "$wiki_dir" commit -m "Sync wiki from ${GITHUB_SHA}"
+            git -C "$wiki_dir" push origin HEAD
+          fi

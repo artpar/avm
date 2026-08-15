@@ -1,14 +1,52 @@
-name: ci
+name: CI
+
 on:
   push:
+    branches: [main]
   pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  test:
+  quality:
+    name: Quality gate
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo fmt --check
-      - run: cargo test --all-targets
-      - run: bash -n vm/image/build-base.sh scripts/linux-smoke.sh scripts/qemu-protocol-smoke.sh
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: supervisor/browser/package-lock.json
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.87.0 --profile minimal --component clippy,rustfmt
+
+      - name: Run repository quality gate
+        run: make ci
+
+      - name: Validate shell syntax
+        run: bash -n vm/image/build-base.sh scripts/linux-smoke.sh scripts/qemu-protocol-smoke.sh
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
