@@ -5,6 +5,16 @@ All notable changes to AVM are documented here. The project follows
 [Conventional Commits](https://www.conventionalcommits.org/) to automate version
 selection and release notes.
 
+## [0.1.3](https://github.com/artpar/avm/compare/v0.1.2...v0.1.3) (2026-08-15)
+
+
+### Bug Fixes
+
+* bound remote publishes to Git-visible files ([a7dd42b](https://github.com/artpar/avm/commit/a7dd42b9625f23b53341506c007da995c1c22fa6))
+* keep tar options portable across release hosts ([5dee357](https://github.com/artpar/avm/commit/5dee3572fb7331b0e243c91aeabff9d8e8a08647))
+* map guest workspace ownership through virtiofs ([69eeefc](https://github.com/artpar/avm/commit/69eeefc23422a4a343236d5c6a0940c28dc79981))
+* ship release-native Linux smoke tooling ([5d239e5](https://github.com/artpar/avm/commit/5d239e5fc6e24bbdd3a21f048419f4a5b65f739d))
+
 ## [0.1.2](https://github.com/artpar/avm/compare/v0.1.1...v0.1.2) (2026-08-15)
 
 
