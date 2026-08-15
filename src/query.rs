@@ -438,9 +438,8 @@ fn browser_element_under_pointer(
         ),
         "selected event is not a pointer event"
     );
-    let display_x = numeric_field(&input.payload, "x")?;
-    let display_y = numeric_field(&input.payload, "y")?;
     let all = store.history(None, None, &[])?;
+    let (display_x, display_y, coordinate_event) = pointer_coordinates(&input, &all)?;
     let mut correlations = all
         .iter()
         .filter(|event| event.kind == "browser.coordinate_correlation")
@@ -493,16 +492,24 @@ fn browser_element_under_pointer(
     let viewport_y = (display_y - origin_y) * inner_height / viewport_height;
     let element = hit_test_snapshot(snapshot, viewport_x, viewport_y)?;
     let interval = QueryInterval {
-        start_ns: snapshot.host_monotonic_ns.min(input.host_monotonic_ns),
+        start_ns: snapshot
+            .host_monotonic_ns
+            .min(input.host_monotonic_ns)
+            .min(coordinate_event.host_monotonic_ns),
         end_ns: snapshot.host_monotonic_ns.max(input.host_monotonic_ns),
     };
-    let events = vec![snapshot.clone(), correlation.clone(), input.clone()];
+    let mut events = vec![snapshot.clone(), correlation.clone()];
+    if coordinate_event.id != input.id {
+        events.push(coordinate_event.clone());
+    }
+    events.push(input.clone());
     let frames = frames_at(store, &[input.host_monotonic_ns], 1)?;
     build_result(
         query,
         json!({
             "type": "browser_snapshot_hit_test",
             "pointerEventId": input.id,
+            "coordinateSourceEventId": coordinate_event.id,
             "browserSnapshotEventId": snapshot.id,
             "coordinateCorrelationEventId": correlation.id,
             "snapshotDistanceNs": distance_ns,
@@ -777,6 +784,45 @@ fn numeric_field(value: &Value, field: &str) -> Result<f64> {
         .with_context(|| format!("payload has no numeric {field}"))
 }
 
+fn direct_pointer_coordinates(event: &RawEvent) -> Option<(f64, f64)> {
+    let coordinates = event.payload.get("detail").unwrap_or(&event.payload);
+    Some((
+        coordinates.get("x")?.as_f64()?,
+        coordinates.get("y")?.as_f64()?,
+    ))
+}
+
+fn pointer_coordinates<'a>(
+    input: &'a RawEvent,
+    events: &'a [RawEvent],
+) -> Result<(f64, f64, &'a RawEvent)> {
+    if let Some((x, y)) = direct_pointer_coordinates(input) {
+        return Ok((x, y, input));
+    }
+
+    let action_id = input.payload.get("actionId").and_then(Value::as_str);
+    let preceding_moves = events.iter().filter(|event| {
+        event.source == "input"
+            && event.kind == "pointer.move"
+            && event.host_monotonic_ns <= input.host_monotonic_ns
+            && direct_pointer_coordinates(event).is_some()
+    });
+    let coordinate_event = action_id
+        .and_then(|action_id| {
+            preceding_moves
+                .clone()
+                .filter(|event| {
+                    event.payload.get("actionId").and_then(Value::as_str) == Some(action_id)
+                })
+                .max_by_key(|event| (event.host_monotonic_ns, event.id))
+        })
+        .or_else(|| preceding_moves.max_by_key(|event| (event.host_monotonic_ns, event.id)))
+        .context("pointer event has no coordinates and no preceding pointer move")?;
+    let (x, y) = direct_pointer_coordinates(coordinate_event)
+        .context("coordinate source event has no pointer coordinates")?;
+    Ok((x, y, coordinate_event))
+}
+
 fn required_event(store: &ExperienceStore, event_id: Uuid) -> Result<RawEvent> {
     store
         .event(event_id)?
@@ -930,7 +976,9 @@ mod tests {
     struct Fixture {
         _temp: tempfile::TempDir,
         store: ExperienceStore,
+        move_id: Uuid,
         down_id: Uuid,
+        up_id: Uuid,
         request_id: Uuid,
         exception_id: Uuid,
         runtime_span_id: Uuid,
@@ -1017,25 +1065,35 @@ mod tests {
         );
         correlation.provenance = Provenance::Derived;
         timeline.record(correlation).unwrap();
+        let action_id = Uuid::new_v4();
+        let pointer_move = RawEvent::observed_at(
+            session,
+            19,
+            "input",
+            "pointer.move",
+            json!({"actionId": action_id, "detail": {"x": 1, "y": 1}}),
+        );
+        let move_id = pointer_move.id;
+        timeline.record(pointer_move).unwrap();
         let mut down = RawEvent::observed_at(
             session,
             20,
             "input",
             "pointer.down",
-            json!({"x": 1, "y": 1}),
+            json!({"actionId": action_id, "detail": {"button": "Left"}}),
         );
         down.repository_fingerprint = Some("repo-a".into());
         let down_id = down.id;
         timeline.record(down).unwrap();
-        timeline
-            .record(RawEvent::observed_at(
-                session,
-                30,
-                "input",
-                "pointer.up",
-                json!({"x": 1, "y": 1}),
-            ))
-            .unwrap();
+        let pointer_up = RawEvent::observed_at(
+            session,
+            30,
+            "input",
+            "pointer.up",
+            json!({"actionId": action_id, "detail": {"button": "Left"}}),
+        );
+        let up_id = pointer_up.id;
+        timeline.record(pointer_up).unwrap();
         let request = RawEvent::observed_at(
             session,
             40,
@@ -1132,7 +1190,9 @@ mod tests {
         Fixture {
             _temp: temp,
             store,
+            move_id,
             down_id,
+            up_id,
             request_id,
             exception_id,
             runtime_span_id,
@@ -1263,16 +1323,24 @@ mod tests {
                 .contains(&richer.frames[0].artifact_ref)
         );
 
-        let element = execute_query(
-            &fixture.store,
-            ExperienceQuery::BrowserElementUnderPointer {
-                event_id: fixture.down_id,
-            },
-        )
-        .unwrap();
-        assert_eq!(element.relation["element"]["nodeName"], "BUTTON");
-        assert_eq!(element.relation["element"]["accessibility"]["name"], "Save");
-        assert_eq!(element.relation["snapshotDistanceNs"], 5);
+        for (event_id, expected_distance) in [
+            (fixture.move_id, 4),
+            (fixture.down_id, 5),
+            (fixture.up_id, 15),
+        ] {
+            let element = execute_query(
+                &fixture.store,
+                ExperienceQuery::BrowserElementUnderPointer { event_id },
+            )
+            .unwrap();
+            assert_eq!(element.relation["element"]["nodeName"], "BUTTON");
+            assert_eq!(element.relation["element"]["accessibility"]["name"], "Save");
+            assert_eq!(element.relation["snapshotDistanceNs"], expected_distance);
+            assert_eq!(
+                element.relation["coordinateSourceEventId"],
+                fixture.move_id.to_string()
+            );
+        }
 
         let dialog = execute_query(
             &fixture.store,
