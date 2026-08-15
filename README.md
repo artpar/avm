@@ -1,198 +1,238 @@
 # AVM
 
-AVM is a host-owned, instrumented virtual computer for software-development agents. Codex runs and authenticates on the local supervisor machine. A durable, explicit remote channel connects that supervisor to a GCE Linux/KVM host and its nested guest; Codex does not need to run or log in on the VM.
+[![CI](https://github.com/artpar/avm/actions/workflows/ci.yml/badge.svg)](https://github.com/artpar/avm/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/artpar/avm)](https://github.com/artpar/avm/releases/latest)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-Implemented now:
+AVM is a host-owned, instrumented virtual computer for software-development
+agents. It runs an untrusted candidate project inside a nested graphical Linux
+guest while a trusted supervisor records what the guest displayed, what input
+was sent, what the browser did, and which repository version produced the
+result.
 
-- qcow2 base plus per-run overlays;
-- QMP lifecycle (`create-run`, `start`, `status`, clean snapshot-backed `reset`, `stop`, `destroy-run`);
-- candidate repository mounted with virtiofs while supervisor state stays outside it;
-- a private D-Bus bus per VM and QEMU D-Bus display listener;
-- host framebuffer reconstruction from `Scanout` and rectangular `Update` calls;
-- cursor events and keyboard/mouse injection through QEMU console interfaces;
-- monotonic timestamps recorded before input is sent;
-- PNG capture, browser-navigation smoke gate, and a drag gate that requires display updates between pointer-down and pointer-up.
-- a canonical SQLite timeline and immutable SHA-256 artifact store outside the candidate workspace;
-- deterministic repository fingerprints covering Git HEAD, index, worktree, untracked files, deletions, symlinks, and executable mode;
-- offline `observe`, `history`, `frame`, and `replay` commands backed by raw scanout/update artifacts;
-- a Codex App Server stdio client that records thread, turn, message, command, file-change, MCP, and approval traffic with repository fingerprints;
-- a `codex exec --json` baseline recorder;
-- browser navigation, DOM, accessibility, console, network, performance, screenshot, and trace observation through a supervisor-owned CDP tunnel;
-- reconnectable guest AT-SPI snapshots and events for Chromium and native applications over an isolated virtio-serial channel;
-- bounded runtime ingestion for application logs, OpenTelemetry-style spans, process status, and profiling samples;
-- host-timestamped QEMU D-Bus PCM capture with immutable raw intervals, waveform metadata, and optional interpretation adapters;
-- pixel-matched browser-to-framebuffer coordinate correlation and deterministic duplicate-submit failure diagnosis;
-- bounded temporal analysis of full scanouts and rectangular updates, including delayed or absent application response, repeated regions, A-B-A reversions, and exact pixel translations;
-- QEMU-backed click actuation with separately timestamped move, pointer-down, and pointer-up receipts;
-- event-triggered, provider-neutral VLM observations over content-addressed before/during/after frames, retained separately from direct evidence;
-- evaluator-owned policy phases, evidence debt, structured declarations and diagnoses, immutable evidence records, and fingerprint-bound workspace promotion;
-- supervisor-owned staging so Codex mutations cannot reach the candidate before policy-controlled promotion.
+Codex stays on your local workstation. An explicit `gcloud compute ssh` channel
+connects it to the Linux/KVM host, so no Codex login or ChatGPT credential is
+placed on the VM.
 
-## Local supervisor and remote VM
+> AVM is a pre-1.0 research system. It has passed its scoped acceptance gates on
+> GCE nested virtualization, but it is not a general-purpose VM manager or a
+> hardened multi-tenant sandbox.
 
-The supported deployment keeps Codex local. Use authenticated `gcloud compute ssh` with an explicit project, zone, and instance as the control channel. AVM's `remote-channel-create` command records that channel, and `remote-publish` transfers a fingerprinted candidate through it. Guest SSH and Chromium CDP are tunneled through the GCE host when required. Device-code authorization on the VM is neither required nor recommended for this architecture.
+## Why AVM?
 
-In evaluator runs, candidate application processes execute inside the nested
-guest against the virtiofs-mounted `/workspace`. They must not run as the GCE
-user that owns supervisor state. Evaluator-private proxies may run on the host
-and reach a guest service through a scoped SSH tunnel; their files are never
-mounted into the guest.
+Ordinary coding agents can inspect files and command output, but graphical
+behavior is easy to miss and hard to prove. AVM gives an agent and evaluator a
+shared, persistent record:
 
-The run configuration is boot-bound: after the outer GCE host reboots, create a new run instead of appending events to a run associated with the previous host boot. Stop nested QEMU and the outer GCE instance when they are not in use.
+- QEMU/KVM lifecycle with clean snapshot-backed resets;
+- authoritative QEMU D-Bus framebuffer capture and recorded mouse/keyboard
+  input;
+- browser DOM, accessibility, console, network, performance, screenshots, and
+  traces over CDP;
+- native AT-SPI observation, runtime telemetry, host-side audio, and temporal
+  visual analysis;
+- a canonical SQLite timeline plus immutable SHA-256 artifact storage;
+- historical frame reconstruction, replay, and nine typed cross-source queries;
+- evaluator-owned declarations, evidence gates, diagnoses, and
+  fingerprint-bound publishing;
+- local Codex supervision and a narrow MCP interface to a remote GCE/KVM run.
 
-Build the guest on the Linux host as described in [vm/image/README.md](vm/image/README.md), then:
+## Architecture
+
+```mermaid
+flowchart LR
+    C[Local Codex] -->|stdio MCP| M[Local AVM MCP server]
+    M -->|gcloud SSH/SCP| H[GCE Linux/KVM host]
+    H --> S[AVM supervisor]
+    S -->|QMP + D-Bus display| Q[Nested QEMU guest]
+    S -->|CDP / AT-SPI / input| Q
+    S --> E[(Timeline + immutable artifacts)]
+    L[Local candidate] -->|fingerprinted publish| H
+    Q -->|read/write /workspace| L2[Remote candidate copy]
+```
+
+The candidate and guest never receive local Codex credentials, GCE
+credentials, evaluator-private data, or the supervisor evidence store.
+
+## Requirements
+
+The supported runtime host is x86-64 Ubuntu 24.04 with:
+
+- hardware virtualization and KVM (nested virtualization when using GCE);
+- QEMU 6.0 or newer, D-Bus, `virtiofsd`, OpenSSH, and
+  `cloud-image-utils`;
+- Rust 1.87+ and Node.js 22+ when building from source;
+- authenticated `gcloud` on the local workstation for remote use.
+
+macOS is suitable for local Codex, MCP, documentation, and most unit tests, but
+the complete VM and input stack is Linux-only.
+
+## Install
+
+Download the Linux x86-64 archive and checksum from
+[GitHub Releases](https://github.com/artpar/avm/releases), or use GitHub CLI,
+then verify it:
 
 ```sh
-cargo build --release
-target/release/avm create-run \
+gh release download --repo artpar/avm --pattern 'avm-*.tar.gz*'
+shasum -a 256 -c avm-*.tar.gz.sha256
+tar -xzf avm-*.tar.gz
+sudo install -m 0755 avm-v*-x86_64-unknown-linux-gnu/avm /usr/local/bin/avm
+avm --version
+```
+
+To build from source:
+
+```sh
+git clone https://github.com/artpar/avm.git
+cd avm
+make setup
+make check
+sudo make install
+```
+
+## Quick start on a Linux/KVM host
+
+Build the pinned Ubuntu guest image:
+
+```sh
+sudo mkdir -p /var/lib/avm/images/noble-v1
+sudo chown "$USER" /var/lib/avm/images/noble-v1
+vm/image/build-base.sh /var/lib/avm/images/noble-v1
+```
+
+Create a candidate directory and a fresh run:
+
+```sh
+RUN_CONFIG=$(avm create-run \
   --base-image /var/lib/avm/images/noble-v1/avm-base.qcow2 \
   --candidate /srv/candidates/example \
-  --state-root /var/lib/avm/runs
-target/release/avm start --run /var/lib/avm/runs/RUN_ID/run.json
-target/release/avm capture --run /var/lib/avm/runs/RUN_ID/run.json --output /tmp/current.png
+  --state-root /var/lib/avm/runs)
+
+avm start --run "$RUN_CONFIG"
+avm status --run "$RUN_CONFIG"
+avm capture --run "$RUN_CONFIG" --output /tmp/current.png
 ```
 
-QEMU starts paused without the non-migratable vhost-user filesystem device, records an internal full-VM snapshot named `avm-clean` on the writable `os` qcow2 node, hot-adds the candidate virtiofs device, and then starts the guest. `reset` restarts QEMU paused, restores that snapshot through QMP, hot-adds virtiofs again, and resumes execution; it does not preserve guest disk mutations. QEMU 6.0 or newer is required for the native `snapshot-save` and `snapshot-load` commands.
-
-Run `scripts/linux-smoke.sh RUN_CONFIG` for the acceptance sequence. It does not report success unless QEMU provides a real framebuffer and a display update occurs after injected input; its drag check additionally requires an update while the pointer is held down.
-
-After an interaction, the experience remains queryable even when QEMU is stopped:
+Interact through the real guest input path and inspect the durable record:
 
 ```sh
-target/release/avm observe --run /var/lib/avm/runs/RUN_ID/run.json
-target/release/avm history --run /var/lib/avm/runs/RUN_ID/run.json --source input
-target/release/avm frame --run /var/lib/avm/runs/RUN_ID/run.json --at-ns MONOTONIC_NS --output /tmp/frame.png
-target/release/avm replay --run /var/lib/avm/runs/RUN_ID/run.json --last-duration-ms 10000
-target/release/avm act-click --run /var/lib/avm/runs/RUN_ID/run.json --x 640 --y 360 --wait-after-ms 1000
-target/release/avm act-drag --run /var/lib/avm/runs/RUN_ID/run.json \
-  --from-x 400 --from-y 300 --to-x 700 --to-y 500 --steps 12 --duration-ms 500
-target/release/avm act-scroll --run /var/lib/avm/runs/RUN_ID/run.json --delta-y 3
-target/release/avm temporal-analyze \
-  --run /var/lib/avm/runs/RUN_ID/run.json \
-  --start-ns ACTION_START_NS --end-ns OBSERVATION_END_NS
-target/release/avm accessibility-observe \
-  --run /var/lib/avm/runs/RUN_ID/run.json --duration-ms 10000
-target/release/avm runtime-import \
-  --run /var/lib/avm/runs/RUN_ID/run.json \
-  --input fixtures/runtime/telemetry.jsonl
-target/release/avm audio-observe \
-  --run /var/lib/avm/runs/RUN_ID/run.json --duration-ms 10000
-target/release/avm performance-measure \
-  --run /var/lib/avm/runs/RUN_ID/run.json --duration-ms 5000
-target/release/avm performance-report \
-  --run /var/lib/avm/runs/RUN_ID/run.json --last-duration-ms 30000
+avm act-click --run "$RUN_CONFIG" --x 640 --y 360 --wait-after-ms 500
+avm act-type --run "$RUN_CONFIG" --text 'hello from AVM'
+avm act-key --run "$RUN_CONFIG" --keycode 28 --mode press
+avm observe --run "$RUN_CONFIG"
+avm history --run "$RUN_CONFIG" --last-duration-ms 10000 --source input
+avm replay --run "$RUN_CONFIG" --last-duration-ms 10000
 ```
 
-The host action interface also includes `act-pointer`, `act-button`, `act-double-click`, `act-key`, `act-type`, and `act-wait`. Each command emits one receipt with the action ID and start/completion timestamps; the canonical input history retains that ID across all low-level events belonging to the action. The local MCP server exposes the same complete vocabulary through `avm_act`.
+Stop the nested guest when finished:
 
-`temporal-analyze` reconstructs consecutive same-sized full scanouts as well as rectangular display updates. It records its derived result back into the run timeline as `perception.temporal.analysis`. Small connected pixel changes near a recent pointer destination are retained as `display.cursor_only_change` evidence but cannot satisfy an application visual-response claim. Exact translated components are reported with source and destination bounds, displacement, and pixel match ratio.
+```sh
+avm stop --run "$RUN_CONFIG"
+```
 
-To interpret an interesting temporal result with a multimodal model, configure a direct executable adapter:
+Run `scripts/linux-smoke.sh "$RUN_CONFIG"` for the real framebuffer/input
+acceptance check. See the [Getting Started wiki](https://github.com/artpar/avm/wiki/Getting-Started)
+for host setup and the [Operations wiki](https://github.com/artpar/avm/wiki/Operations)
+for reset, capture, history, replay, and cleanup.
+
+## Connect local Codex over MCP
+
+First create a fixed remote channel from the local candidate to an existing AVM
+run on the GCE host:
+
+```sh
+CHANNEL=$(avm remote-channel-create \
+  --local-candidate /path/to/candidate \
+  --state-root /path/outside/candidate/avm-supervisor \
+  --project MY_GCP_PROJECT \
+  --zone MY_GCP_ZONE \
+  --instance MY_GCE_INSTANCE \
+  --remote-run /var/lib/avm/runs/RUN_ID/run.json \
+  --remote-avm /home/USER/avm/target/release/avm)
+
+avm remote-publish --channel "$CHANNEL"
+```
+
+Create `/path/outside/candidate/avm-mcp.json`:
 
 ```json
 {
-  "program": "/opt/avm/bin/my-vlm-adapter",
-  "args": [],
-  "model": "provider/model-name",
-  "modelVersion": "pinned-version-or-snapshot"
+  "project": "MY_GCP_PROJECT",
+  "zone": "MY_GCP_ZONE",
+  "instance": "MY_GCE_INSTANCE",
+  "remoteAvm": "/home/USER/avm/target/release/avm",
+  "remoteRun": "/var/lib/avm/runs/RUN_ID/run.json",
+  "remoteBrowserScript": "/home/USER/avm/supervisor/browser/observer.mjs",
+  "browserEndpoint": "http://127.0.0.1:9223",
+  "localAvm": "/absolute/path/to/local/avm",
+  "remoteChannel": "/absolute/path/to/channel.json"
 }
 ```
 
-```sh
-target/release/avm vlm-observe \
-  --run /var/lib/avm/runs/RUN_ID/run.json \
-  --adapter-config /etc/avm/vlm-adapter.json \
-  --temporal-event-id TEMPORAL_ANALYSIS_EVENT_ID
-```
-
-The adapter is started directly without a shell. It receives one JSON request on stdin containing the constrained prompt plus three PNG artifact paths and hashes, and must return `{"output": ...}` on stdout. AVM invokes it only for eligible temporal observations such as delayed response, repeated updates, state reversion, or pixel translation. The resulting `perception.vlm.observation` event records the model and version, prompt, output, trigger, timestamp, and portable input artifact hashes with `model_interpreted` provenance. It neither alters nor replaces the underlying `derived` temporal event.
-
-Use `experience-query` for cross-source questions. Queries are JSON so the anchor and temporal assumptions remain explicit:
-
-```json
-{
-  "kind": "aroundEvent",
-  "eventId": "00000000-0000-0000-0000-000000000000",
-  "beforeMs": 500,
-  "afterMs": 2000
-}
-```
+Then launch Codex locally with the MCP server:
 
 ```sh
-target/release/avm experience-query \
-  --run /var/lib/avm/runs/RUN_ID/run.json \
-  --input query.json
+codex exec --ephemeral --sandbox workspace-write \
+  -c 'mcp_servers.avm.command="node"' \
+  -c 'mcp_servers.avm.args=["/absolute/path/to/avm/supervisor/mcp/avm-server.mjs","/path/outside/candidate/avm-mcp.json"]' \
+  -c 'mcp_servers.avm.required=true' \
+  'Inspect the running application, diagnose the issue, fix it, and verify the result.'
 ```
 
-Supported query kinds are `aroundEvent`, `networkFrames`, `visibleWhilePointerDown`, `browserElementUnderPointer`, `evidenceSinceFingerprint`, `beforeConsoleException`, `lastDialog`, `richerVisualEvidence`, and `runtimeTrace`. Results put directly observed events first, followed by deterministic derivations, model interpretations, and agent claims in separate fields. Relevant temporal and VLM results are joined by the interval in their payload even when analysis completed later. Frame lists are content-addressed and collapse adjacent identical framebuffer states. Browser hit-testing uses a pixel-verified viewport correlation, CDP layout bounds and paint order, and the accessibility tree; it reports the correlated snapshot distance rather than claiming a live DOM hit-test. Network request/response association currently uses URL plus order and states that limitation because the browser sensor does not yet emit a transport request ID.
+Codex receives capture, recorded input, history, replay, structured query,
+accessibility, browser observation, and fingerprinted publish tools—never an
+arbitrary remote shell. See [Codex and MCP](https://github.com/artpar/avm/wiki/Codex-and-MCP)
+for tunnel requirements and the full tool map.
 
-`runtimeTrace` anchors on an imported runtime span or log. Exact trace-ID members are labeled `declared_by_instrumentation`; browser, input, display, and other events in the returned interval are explicitly labeled non-causal temporal context. The raw JSONL batch is retained as one immutable artifact, while each normalized event preserves its source timestamp and sequence. Runtime instrumentation is intentionally selective: AVM does not trace every function call, and existing browser traces and process evidence remain the preferred sources when they already answer the question.
+## Command groups
 
-`audio-observe` registers an `org.qemu.Display1.AudioOutListener`, timestamps PCM callbacks on the host, and retains at most 64 MiB per stream. One `audio.raw.interval` event references the immutable PCM artifact; a separate derived event records frame count, duration, and peak/RMS when the sample encoding is supported. Ten-millisecond QEMU blocks do not become ten-millisecond timeline events. The guest image includes an HDA codec, ALSA tools, and the matching Ubuntu kernel modules.
+| Area | Commands |
+| --- | --- |
+| VM lifecycle | `create-run`, `start`, `status`, `reset`, `checkpoint`, `restore-checkpoint`, `stop`, `destroy-run` |
+| Visual history | `capture`, `observe`, `history`, `frame`, `replay`, `temporal-analyze` |
+| Guest input | `act-pointer`, `act-click`, `act-double-click`, `act-button`, `act-drag`, `act-scroll`, `act-key`, `act-type`, `act-wait` |
+| Rich observation | `browser-observe`, `browser-correlate`, `accessibility-observe`, `audio-observe`, `runtime-import`, `performance-measure` |
+| Experience | `experience-query`, `vlm-observe`, `performance-report` |
+| Agents and remote | `session-create`, `codex-turn`, `codex-exec`, `remote-channel-create`, `remote-publish` |
+| Evidence policy | `policy-init`, `policy-declare`, `policy-status`, `policy-diagnose`, `evidence-command`, `evidence-list`, `evidence-browser` |
 
-Optional transcription or sound-event interpretation uses a direct executable adapter configured with `program`, `args`, `model`, `modelVersion`, and `kind` (`transcription` or `audio_event`). Run `audio-interpret --audio-event-id ID --adapter-config CONFIG`. The adapter receives the PCM artifact path only in its ephemeral stdin request; durable output retains the artifact hash and is recorded as `perception.audio.interpretation` with `model_interpreted` provenance. Speech text is therefore not part of the core audio event format.
+Run `avm help COMMAND` for exact options. Some capture, audio, performance, and
+input commands are compiled only for Linux because they bind to the QEMU host
+interfaces.
 
-`performance-measure` runs equal idle baseline and instrumented phases on the same running VM. It samples QEMU and supervisor CPU/RSS/I/O from `/proc`, obtains authoritative vCPU thread IDs from QMP, and measures timeline/artifact growth while the display listener is attached. The vCPU value is explicitly a host-time proxy for guest CPU. `performance-report` summarizes any recorded interval: event volume, storage, display processing, input action duration, audio callback processing, VLM/audio interpretation call counts, and reported model token usage. Phase differences are measurements subject to scheduling noise, not causal proof.
+## Development and releases
 
-In the first three-second GCE/KVM idle characterization, baseline/instrumented QEMU CPU were 102.33%/103.48%, vCPU host-time proxy 102.67%/103.15%, and supervisor CPU 0%/3.32%. Attaching the sensor produced two events, one 4,096,000-byte initial scanout artifact, about 1.36 MB/s short-window artifact bandwidth, and 49.2 ms initial scanout processing. These short-window numbers establish scale; repeated workload trials remain necessary before drawing conclusions.
+`make help` lists the supported local workflow. `make ci` reproduces the GitHub
+quality gate: locked dependencies, formatting, Clippy with warnings denied,
+Rust tests, browser tests, MCP contracts, and experiment harness checks.
 
-Create an externally owned session and run Codex under its supervisor store:
+Releases are automated with Release Please. Conventional commits determine the
+next semantic version, and merging the generated release PR updates the Cargo
+version and changelog. GitHub Actions then tests the release commit, builds a
+Linux archive, writes a SHA-256 checksum, emits build provenance, and publishes
+the draft GitHub Release. Details are in [Releasing](https://github.com/artpar/avm/wiki/Releasing)
+and [CONTRIBUTING.md](CONTRIBUTING.md).
 
-```sh
-SESSION_JSON=$(target/release/avm session-create \
-  --candidate /srv/candidates/example \
-  --state-root /var/lib/avm/supervisor)
+## Project evidence and scope
 
-target/release/avm codex-turn \
-  --session /var/lib/avm/supervisor/SESSION_ID/session.json \
-  --approval decline \
-  --approval-policy on-request \
-  --prompt 'Inspect this application and report what you observe.'
+- [Completion audit](docs/completion-audit.md) — authoritative specification
+  status matrix.
+- [Final experience loop](docs/final-experience-loop.md) — end-to-end graphical
+  pre/post diagnosis, publication, replay, and independent scoring.
+- [Controlled experiment](docs/experiment-results.md) — balanced A/B/C/D result
+  and limitations.
+- [Guest action acceptance](docs/action-api-acceptance.md) and
+  [browser transport acceptance](docs/browser-transport-acceptance.md).
+- [Experiment runner](experiments/README.md) and
+  [reproducible guest image](vm/image/README.md).
 
-target/release/avm codex-exec \
-  --candidate /srv/candidates/example \
-  --state-root /var/lib/avm/baselines \
-  --prompt 'Run the targeted tests and report the result.'
-```
+The controlled experiment found no functional-defect benefit from rich
+perception on the tested task/model and measured substantial added time, tool,
+and token cost. That honest scoped result is not a general claim about visual
+agents.
 
-To record Codex into the same canonical timeline as a VM run, select the run instead of creating a standalone supervisor session:
+## Security and license
 
-```sh
-target/release/avm codex-turn \
-  --run /var/lib/avm/runs/RUN_ID/run.json \
-  --approval decline \
-  --approval-policy on-request \
-  --prompt 'Modify the mounted application, verify it, and summarize the result.'
-```
-
-`--run`, `--session`, and the standalone `--candidate`/`--state-root` pair are mutually exclusive. Supervisor state must be outside the candidate workspace. App Server wire schemas generated from the pinned CLI are under `supervisor/codex/schema`; see its README before upgrading Codex.
-
-For a policy-controlled session, initialize policy against the session, submit a structured declaration before mutation, and collect evidence afterward:
-
-```sh
-target/release/avm policy-init --target /var/lib/avm/supervisor/SESSION_ID/session.json
-target/release/avm policy-declare \
-  --policy /var/lib/avm/supervisor/SESSION_ID/policy/policy-state.json \
-  --input declaration.json
-target/release/avm codex-turn \
-  --session /var/lib/avm/supervisor/SESSION_ID/session.json \
-  --policy /var/lib/avm/supervisor/SESSION_ID/policy/policy-state.json \
-  --approval decline \
-  --approval-policy on-request \
-  --prompt 'Make the declared change and run the targeted verifier.'
-target/release/avm evidence-command \
-  --policy /var/lib/avm/supervisor/SESSION_ID/policy/policy-state.json \
-  --expected-exit-code 0 -- ./check.sh
-target/release/avm policy-status \
-  --policy /var/lib/avm/supervisor/SESSION_ID/policy/policy-state.json
-```
-
-Contradictory evidence moves policy to `EVIDENCE_FAILED`. Further declarations and edits remain blocked until `policy-diagnose` records a causal diagnosis and a new discriminating observation is acquired. `evidence-list` exposes the immutable evidence ledger. For UI claims, use `browser-observe`, inject input through AVM, run `browser-correlate`, then register the bounded before/input/display/after proof with `evidence-browser`. Browser window metrics are recorded only as unverified estimates; the authoritative coordinate mapping is the pixel correlation against the QEMU framebuffer.
-
-`scripts/qemu-protocol-smoke.sh [EVIDENCE_DIRECTORY]` is a smaller integration check for development hosts without KVM. It boots a 512-byte VGA fixture under QEMU TCG and requires a real D-Bus scanout followed by injected keyboard events, guest acknowledgments/repaints, a changed host framebuffer, and an exact return to the pre-input framebuffer after QMP snapshot restore. When an empty evidence directory is supplied, the raw timeline, screenshots, disk, logs, exact QEMU arguments, environment, result, and a complete checksum manifest are retained there. Passing it validates the protocol bridge and reset mechanism, but it is not a substitute for the full KVM/Weston/Chromium acceptance sequence.
-
-## Current boundary
-
-The scoped research system has passed the specification's completion gates on a real GCE Linux/KVM host. Milestones one through eight cover VM lifecycle/reset, persistent experience, local Codex supervision over a remote channel, authoritative browser observation/failure diagnosis, evaluator-owned policy plus evidence enforcement, temporal perception, queryable cross-source experience, and reconnectable native accessibility. Triggered VLM, selective runtime telemetry, host audio capture, the medium evaluator board with eight fault classes, and paired performance characterization are also implemented and evidenced.
-
-The dedicated end-to-end trajectory completed graphical pre/post interactions under overlapping CDP observation, temporal history and a canonical richer query, diagnosis, publication, replay, corrected visual observation and an evaluator-owned zero-defect final check; see `docs/final-experience-loop.md`. The repaired, balanced eight-trial A/B/C/D experiment found zero rich-perception functional-defect main effect on the tested retry-duplicate task while adding substantial time, tool and token cost; see `docs/experiment-results.md`. This is the required honest result, not evidence of a universal benefit or a reason to continue toward a custom OS/compositor. `docs/completion-audit.md` is the authoritative status matrix.
+Read [SECURITY.md](SECURITY.md) before reporting a trust-boundary issue. AVM is
+licensed under the [Apache License 2.0](LICENSE).
