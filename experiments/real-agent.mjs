@@ -40,17 +40,21 @@ if (preflight) {
   let remoteState;
   try {
     remoteState = await prepareRemote();
-    const observation = must(await gcloudAvm([
-      'browser-observe', '--run', remoteState.run,
-      '--endpoint', 'http://127.0.0.1:9223',
-      '--script', config.remoteBrowserScript,
-      '--duration-ms', '500',
-    ]));
-    const browser = JSON.parse(observation.stdout.trim());
+    const browser = await withMcp(remoteState.mcp, async call => {
+      const started = JSON.parse(mcpText(await call('avm_browser_observe', { mode: 'start', durationMs: 30000 })));
+      await call('avm_act', { action: 'click', x: 1055, y: 190 });
+      await call('avm_act', { action: 'type_text', text: 'AVM overlap preflight' });
+      await call('avm_act', { action: 'key_press', keycode: 28 });
+      return JSON.parse(mcpText(await call('avm_browser_observe', { mode: 'finish', observationId: started.observationId })));
+    });
+    const networkHistory = JSON.parse(must(await gcloudAvm(['history', '--run', remoteState.run, '--source', 'network'])).stdout);
+    const networkEventCount = networkHistory.events.length;
+    if (networkEventCount === 0) throw new Error('overlap preflight recorded no network events');
     const result = {
       ...plan,
       remoteRun: remoteState.run,
       browserEventCount: browser.eventCount,
+      networkEventCount,
       browserTraceArtifactRef: browser.traceArtifactRef,
       productInteractions: await recordedInteractions(remoteState),
     };
@@ -156,6 +160,50 @@ async function captureFinalDemoEvidence(remoteState) {
   ]));
   JSON.parse(history.stdout);
   await writeFile(join(trialRoot, 'remote-history.json'), history.stdout.endsWith('\n') ? history.stdout : `${history.stdout}\n`);
+}
+
+async function withMcp(configPath, operation) {
+  const child = spawn(process.execPath, [config.mcpServer, configPath], { cwd: workspace, stdio: ['pipe', 'pipe', 'pipe'] });
+  let buffer = '', stderr = '', nextId = 1;
+  const pending = new Map();
+  child.stderr.on('data', chunk => stderr += chunk);
+  child.stdout.on('data', chunk => {
+    buffer += chunk;
+    for (;;) {
+      const newline = buffer.indexOf('\n');
+      if (newline < 0) break;
+      const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1);
+      if (!line.trim()) continue;
+      const response = JSON.parse(line); const waiter = pending.get(response.id);
+      if (waiter) { pending.delete(response.id); waiter.resolve(response); }
+    }
+  });
+  const request = (method, params = {}) => new Promise((resolveRequest, rejectRequest) => {
+    const id = nextId++;
+    pending.set(id, { resolve: resolveRequest, reject: rejectRequest });
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
+  });
+  child.on('exit', code => {
+    for (const waiter of pending.values()) waiter.reject(new Error(`MCP server exited ${code}: ${stderr}`));
+    pending.clear();
+  });
+  try {
+    await request('initialize', { protocolVersion: '2025-06-18' });
+    return await operation(async (name, args) => {
+      const response = await request('tools/call', { name, arguments: args });
+      if (response.error) throw new Error(response.error.message);
+      if (response.result?.isError) throw new Error(mcpText(response.result));
+      return response.result;
+    });
+  } finally {
+    child.kill('SIGTERM');
+  }
+}
+
+function mcpText(result) {
+  const value = result?.content?.find(item => item.type === 'text')?.text;
+  if (typeof value !== 'string') throw new Error('MCP response has no text content');
+  return value;
 }
 
 async function prepareRemote() {
