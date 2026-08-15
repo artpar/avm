@@ -3,6 +3,7 @@ name: Release
 on:
   push:
     branches: [main]
+    tags: ['v*']
   workflow_dispatch:
 
 permissions:
@@ -22,17 +23,25 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Open or update the semantic release pull request
+        if: github.ref_type != 'tag'
         id: release
         uses: googleapis/release-please-action@8b8fd2cc23b2e18957157a9d923d75aa0c6f6ad5 # v4
 
+      - name: Create the initial draft release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release create "$RELEASE_TAG" --draft --verify-tag --generate-notes
+
       - name: Check out the release commit
-        if: steps.release.outputs.release_created == 'true'
+        if: github.ref_type == 'tag' || steps.release.outputs.release_created == 'true'
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ steps.release.outputs.sha }}
+          ref: ${{ github.ref_type == 'tag' && github.sha || steps.release.outputs.sha }}
 
       - name: Install Node.js
-        if: steps.release.outputs.release_created == 'true'
+        if: github.ref_type == 'tag' || steps.release.outputs.release_created == 'true'
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
@@ -40,33 +49,33 @@ jobs:
           cache-dependency-path: supervisor/browser/package-lock.json
 
       - name: Install pinned Rust toolchain
-        if: steps.release.outputs.release_created == 'true'
+        if: github.ref_type == 'tag' || steps.release.outputs.release_created == 'true'
         run: rustup toolchain install 1.87.0 --profile minimal --component clippy,rustfmt
 
       - name: Test the release commit
-        if: steps.release.outputs.release_created == 'true'
+        if: github.ref_type == 'tag' || steps.release.outputs.release_created == 'true'
         run: make ci
 
       - name: Build release archive and checksum
-        if: steps.release.outputs.release_created == 'true'
+        if: github.ref_type == 'tag' || steps.release.outputs.release_created == 'true'
         run: make package
 
       - name: Attest release archive provenance
-        if: steps.release.outputs.release_created == 'true'
+        if: github.ref_type == 'tag' || steps.release.outputs.release_created == 'true'
         uses: actions/attest-build-provenance@8beda2b7ed98355c0e97c0a63bec38ae472e66c4 # v4
         with:
           subject-path: dist/*.tar.gz
 
       - name: Attach artifacts to the draft release
-        if: steps.release.outputs.release_created == 'true'
+        if: github.ref_type == 'tag' || steps.release.outputs.release_created == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.release.outputs.tag_name }}
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || steps.release.outputs.tag_name }}
         run: gh release upload "$RELEASE_TAG" dist/*.tar.gz dist/*.sha256 --clobber
 
       - name: Publish the verified release
-        if: steps.release.outputs.release_created == 'true'
+        if: github.ref_type == 'tag' || steps.release.outputs.release_created == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.release.outputs.tag_name }}
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || steps.release.outputs.tag_name }}
         run: gh release edit "$RELEASE_TAG" --draft=false
