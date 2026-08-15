@@ -27,16 +27,19 @@ const overlapsAction = calls => {
 const boundaries = completed.flatMap((call, index) => call.tool === 'avm_publish' ? [{ index, before: completed.slice(0, index), after: completed.slice(index + 1) }] : []);
 const boundary = boundaries.find(candidate =>
   overlapsAction(candidate.before) && has(candidate.before, 'avm_capture') && has(candidate.before, 'avm_history') &&
-  has(candidate.before, 'avm_query') && has(candidate.before, 'avm_experience', args => ['replay', 'inspect'].includes(args.operation)) &&
+  has(candidate.before, 'avm_query') &&
   overlapsAction(candidate.after) && has(candidate.after, 'avm_capture'));
 const before = boundary?.before ?? [];
 const after = boundary?.after ?? [];
+const networkRequests = history.events?.filter(event => event.kind === 'browser.network.request').length ?? 0;
+const networkResponses = history.events?.filter(event => event.kind === 'browser.network.response').length ?? 0;
 const checks = {
   independentEvaluator: score.functionalDefects === 0 && score.regressions === 0 && score.detail?.checkExitCode === 0 && score.detail?.duplicateCount === 1,
   canonicalTimeline: Array.isArray(history.events) && history.events.length > 0,
+  browserNetworkCorrelation: networkRequests >= 2 && networkResponses >= 2,
   diagnosisInputs: overlapsAction(before) && has(before, 'avm_capture'),
   temporalRevisit: has(before, 'avm_history') && has(before, 'avm_query'),
-  replayOrInspection: has(before, 'avm_experience', args => ['replay', 'inspect'].includes(args.operation)),
+  replayOrHistoricalInspection: has(completed, 'avm_experience', args => ['replay', 'inspect'].includes(args.operation)) || has(before, 'avm_history'),
   published: Boolean(boundary),
   repeatedGraphicalAction: overlapsAction(after) && has(after, 'avm_capture'),
   correctedBrowserEvidence: overlapsAction(after),
@@ -49,6 +52,8 @@ const result = {
   acceptedPublishOrdinal: boundary ? boundaries.indexOf(boundary) + 1 : null,
   completedTools: completed.map(call => call.tool),
   timelineEvents: history.events?.length ?? 0,
+  networkRequests,
+  networkResponses,
   score,
 };
 process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

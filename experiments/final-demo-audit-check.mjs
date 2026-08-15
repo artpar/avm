@@ -16,7 +16,11 @@ try {
     { type: 'item.completed', item: { id: `item-${index}`, type: 'mcp_tool_call', tool, status: 'completed' } },
   ]);
   await writeFile(join(root, 'codex-events.jsonl'), `${events.map(JSON.stringify).join('\n')}\n`);
-  await writeFile(join(root, 'remote-history.json'), JSON.stringify({ events: [{ id: 'event-1' }] }));
+  const correlatedHistory = { events: [
+    { id: 'request-before', kind: 'browser.network.request' }, { id: 'response-before', kind: 'browser.network.response' },
+    { id: 'request-after', kind: 'browser.network.request' }, { id: 'response-after', kind: 'browser.network.response' },
+  ] };
+  await writeFile(join(root, 'remote-history.json'), JSON.stringify(correlatedHistory));
   const passingScore = join(root, 'passing.json');
   await writeFile(passingScore, JSON.stringify({ functionalDefects: 0, regressions: 0, detail: { checkExitCode: 0, duplicateCount: 1 } }));
   const accepted = await audit(passingScore);
@@ -26,6 +30,10 @@ try {
   await writeFile(failingScore, JSON.stringify({ functionalDefects: 1, regressions: 0, detail: { checkExitCode: 0, duplicateCount: 2 } }));
   const rejected = await audit(failingScore);
   if (rejected.exitCode === 0 || JSON.parse(rejected.stdout).accepted) throw new Error('defective demo accepted');
+
+  await writeFile(join(root, 'remote-history.json'), JSON.stringify({ events: [{ id: 'event-1' }] }));
+  const uncorrelated = await audit(passingScore);
+  if (uncorrelated.exitCode === 0 || JSON.parse(uncorrelated.stdout).accepted) throw new Error('uncorrelated demo accepted');
   process.stdout.write('final demo audit checks passed\n');
 } finally {
   await rm(root, { recursive: true, force: true });
