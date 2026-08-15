@@ -42,13 +42,17 @@ if (preflight) {
     remoteState = await prepareRemote();
     const browser = await withMcp(remoteState.mcp, async call => {
       const started = JSON.parse(mcpText(await call('avm_browser_observe', { mode: 'start', durationMs: 30000 })));
-      await call('avm_act', { action: 'click', x: 1055, y: 190 });
+      await call('avm_act', { action: 'click', x: 950, y: 200 });
       await call('avm_act', { action: 'type_text', text: 'AVM overlap preflight' });
       await call('avm_act', { action: 'key_press', keycode: 28 });
       return JSON.parse(mcpText(await call('avm_browser_observe', { mode: 'finish', observationId: started.observationId })));
     });
-    const networkHistory = JSON.parse(must(await gcloudAvm(['history', '--run', remoteState.run, '--source', 'network'])).stdout);
-    const networkEventCount = networkHistory.events.length;
+    const diagnosticHistory = JSON.parse(must(await gcloudAvm([
+      'history', '--run', remoteState.run, '--source', 'input', '--source', 'browser',
+      '--source', 'network', '--source', 'console', '--source', 'runtime',
+    ])).stdout);
+    await writeFile(join(trialRoot, 'preflight-history.json'), `${JSON.stringify(diagnosticHistory, null, 2)}\n`);
+    const networkEventCount = diagnosticHistory.events.filter(event => event.source === 'network').length;
     if (networkEventCount === 0) throw new Error('overlap preflight recorded no network events');
     const result = {
       ...plan,
