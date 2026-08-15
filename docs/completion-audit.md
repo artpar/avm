@@ -1,6 +1,6 @@
 # Completion audit
 
-This document maps the project specification to executable implementation and external evidence. It deliberately does not declare the project complete while the final two gates remain open.
+This document maps the project specification to executable implementation and external evidence. Both final completion gates now have accepted, immutable evidence.
 
 Status meanings:
 
@@ -27,7 +27,7 @@ Status meanings:
 | Complete repository fingerprint including staged, unstaged, untracked, deletion, symlink and mode state | Verified | `src/fingerprint.rs`; comprehensive fingerprint mutation test |
 | `observe`, bounded meaningful history, frame reconstruction and compact replay after execution | Verified | `src/experience.rs`, CLI commands, MCP `avm_experience`; offline reconstruction/replay tests; `/Users/artpar/workspace/code/avm-evidence/gcloud-milestone-2/caf19906-908a-479c-9f84-8cb2df873651` |
 | Full action vocabulary through the real VM input path, with one action ID per request | Verified | `src/display.rs`, CLI and MCP `avm_act`; `/Users/artpar/workspace/code/avm-evidence/action-api-fbd4901`; `docs/action-api-acceptance.md` |
-| Structural inspection without invented semantics | Implemented | nine typed cross-source queries, `avm_experience inspect`, browser hit-testing with explicit correlation distance, fresh AT-SPI observation |
+| Structural inspection without invented semantics | Verified | nine typed cross-source MCP query variants, `avm_experience inspect`, browser hit-testing with explicit correlation distance, fresh AT-SPI observation; accepted final loop used a canonical typed `aroundEvent` query |
 | Query examples from the specification | Verified | `src/query.rs` focused tests; `/Users/artpar/workspace/code/avm-evidence/gcloud-milestone-7/cde8c1a8-a54c-4f56-94d1-3bc4aac197c1` |
 
 ## Milestone demonstrations
@@ -58,7 +58,7 @@ Status meanings:
 | Explicit `EVIDENCE_FAILED` state blocks edits until diagnosis plus new observation | Verified | policy transition test covering failure, blocked mutation, diagnosis and recovery |
 | Explainable fingerprint-bound evidence debt | Verified | policy debt test and status reasons |
 | Evaluator-owned subsystem rules | Verified | configurable path/subsystem rules and policy tests; actual experiment config remains outside candidate |
-| HTTP and benchmark observations retain required raw detail | Implemented | evaluator-owned direct commands record command, environment, timing, stdout/stderr artifacts, exit status and fingerprint; observation type/instrument remain explicit in the declaration |
+| HTTP and benchmark observations retain required raw detail | Verified | evaluator-owned direct commands record command, environment, timing, stdout/stderr artifacts, exit status and fingerprint; accepted experiment and final hidden scorer preserve raw results outside the candidate |
 | Host state, evidence, artifacts, secrets, base image, policy and hidden tests are unavailable to candidate | Verified | path checks, staging architecture, guest-only `/workspace`, host-private evaluator proxy, external hidden scorer; no Codex authentication on GCE/guest |
 | Hidden final checks use evaluator-owned fresh state | Verified | `benchmarks/evaluator`, `experiments/runner.mjs`, blind labels and fresh workspace/overlay design |
 
@@ -70,14 +70,14 @@ Status meanings:
 | Eight fault classes: temporal, double action, focus, visual, state order, flicker, runtime-only, hidden behavior | Verified | `benchmarks/evaluator/profiles`; evaluator check |
 | Host/guest CPU, memory, write bandwidth, processing/input latency, event/storage/model volume | Verified | `src/performance.rs`; performance tests; real paired GCE measurement summarized in `README.md` |
 | Balanced repeated A/B/C/D runner with fixed model/task/repository/snapshot/dependencies/resources and blind evaluation | Verified | `experiments/runner.mjs`, fixture eight-trial check, real-agent capability-plan check |
-| Complete time/tool/model/interaction/rework/failed-attempt measurement | Implemented | `experiments/agent-metrics.mjs`; Exec/App Server parser check; ordinary JSONL persistence and evaluator merge tests |
+| Complete time/tool/model/interaction/rework/failed-attempt measurement | Verified | `experiments/agent-metrics.mjs`; Exec/App Server parser check; ordinary JSONL persistence and evaluator merge tests; accepted run 5 and final loop contain numeric measurements |
 | Valid controlled outcome experiment using the complete repaired rich stack | Verified | Accepted balanced run `/Users/artpar/workspace/code/avm-evidence/experiments/controlled-v1/run-5`; all seven rich browser calls succeeded; complete metrics and negative result reported in `docs/experiment-results.md` |
 
 ## Completion gates
 
 | Requirement | Status | Required proof |
 | --- | --- | --- |
-| One coding agent completes the entire task→edit→guest run→GUI action→temporal revisit→richer query→browser/runtime correlation→diagnosis→fix→independent evidence→repeat→corrected observation loop | **Open** | Dedicated agent event stream, canonical VM timeline, published fingerprints, independent evaluator result, and before/after artifacts from one successful loop |
+| One coding agent completes the entire task→edit→guest run→GUI action→temporal revisit→richer query→browser/runtime correlation→diagnosis→fix→independent evidence→repeat→corrected observation loop | **Verified** | Accepted run `/Users/artpar/workspace/code/avm-evidence/final-experience-loop/run-3`; 1,696-event canonical timeline, pre/post POST/200 pairs, published fingerprint, zero-defect independent score, before/after framebuffer artifacts and passing machine audit; see `docs/final-experience-loop.md` |
 | Experiment shows whether the environment improves outcomes versus the same model without it | Verified | Run 5 found zero rich-perception functional-defect main effect with substantially higher time/tool/token cost; see `docs/experiment-results.md` |
 
-The project must remain described as incomplete until the remaining end-to-end agent-loop gate has immutable evidence and passes its integrity checks.
+The scoped research system satisfies the specification's completion criteria. The experiment's negative result and limitations remain part of the conclusion rather than being reinterpreted as evidence of benefit.
