@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 description = "Host-owned visual computer instrumentation for coding agents"
+repository = "https://github.com/artpar/avm"
+homepage = "https://github.com/artpar/avm"
+documentation = "https://docs.rs/avm"
+readme = "README.md"
+keywords = ["agents", "virtual-machine", "observability", "qemu", "automation"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 anyhow = "1.0"

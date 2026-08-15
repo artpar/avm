@@ -1,3 +1,4 @@
 /target/
+/dist/
 /supervisor/browser/node_modules/
 .DS_Store
