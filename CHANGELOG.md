@@ -5,6 +5,13 @@ All notable changes to AVM are documented here. The project follows
 [Conventional Commits](https://www.conventionalcommits.org/) to automate version
 selection and release notes.
 
+## [0.3.0](https://github.com/artpar/avm/compare/v0.2.2...v0.3.0) (2026-08-15)
+
+
+### Features
+
+* redesign inspector as whole-machine evidence workspace ([f52e739](https://github.com/artpar/avm/commit/f52e7395c58292f4f93898bc978e3a65cb56788c))
+
 ## [0.2.2](https://github.com/artpar/avm/compare/v0.2.1...v0.2.2) (2026-08-15)
 
 
