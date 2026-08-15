@@ -10,7 +10,8 @@
     ".": {
       "package-name": "avm",
       "changelog-path": "CHANGELOG.md",
-      "draft": true
+      "draft": true,
+      "force-tag-creation": true
     }
   }
 }
