@@ -13,6 +13,9 @@ use uuid::Uuid;
 
 use crate::qmp::QmpClient;
 
+const GUEST_WORKSPACE_UID: u32 = 1000;
+const GUEST_WORKSPACE_GID: u32 = 1000;
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunConfig {
@@ -198,14 +201,20 @@ impl VmController {
         std::fs::write(&paths.dbus_pid, dbus.id().to_string())?;
         wait_for_path(&paths.display_socket, Duration::from_secs(10)).await?;
 
+        let (host_uid, host_gid) = host_identity();
+        ensure!(
+            host_uid != 0 && host_gid != 0,
+            "AVM must run as a non-root user to map the writable guest workspace safely"
+        );
+        ensure_candidate_identity(&self.config.candidate_workspace, host_uid, host_gid)?;
         let virtiofs_log = log_file(&paths.virtiofs_log)?;
         let virtiofs = Command::new(virtiofsd_binary())
-            .arg(format!("--socket-path={}", paths.virtiofs_socket.display()))
-            .arg(format!(
-                "--shared-dir={}",
-                self.config.candidate_workspace.display()
+            .args(virtiofsd_args(
+                paths,
+                &self.config.candidate_workspace,
+                host_uid,
+                host_gid,
             ))
-            .arg("--sandbox=namespace")
             .stdout(Stdio::from(virtiofs_log.try_clone()?))
             .stderr(Stdio::from(virtiofs_log))
             .spawn()
@@ -404,6 +413,51 @@ fn virtiofsd_binary() -> PathBuf {
     PathBuf::from("virtiofsd")
 }
 
+fn virtiofsd_args(
+    paths: &RunPaths,
+    candidate_workspace: &Path,
+    host_uid: u32,
+    host_gid: u32,
+) -> Vec<String> {
+    vec![
+        format!("--socket-path={}", paths.virtiofs_socket.display()),
+        format!("--shared-dir={}", candidate_workspace.display()),
+        "--sandbox=namespace".into(),
+        format!("--uid-map=:{GUEST_WORKSPACE_UID}:{host_uid}:1:"),
+        format!("--gid-map=:{GUEST_WORKSPACE_GID}:{host_gid}:1:"),
+    ]
+}
+
+#[cfg(unix)]
+fn host_identity() -> (u32, u32) {
+    // SAFETY: these libc calls only return the current process credentials.
+    unsafe { (libc::geteuid(), libc::getegid()) }
+}
+
+#[cfg(not(unix))]
+fn host_identity() -> (u32, u32) {
+    (0, 0)
+}
+
+#[cfg(unix)]
+fn ensure_candidate_identity(candidate: &Path, host_uid: u32, host_gid: u32) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = std::fs::metadata(candidate)?;
+    ensure!(
+        metadata.uid() == host_uid && metadata.gid() == host_gid,
+        "candidate must be owned by the AVM host user {host_uid}:{host_gid}; found {}:{}",
+        metadata.uid(),
+        metadata.gid()
+    );
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_candidate_identity(_candidate: &Path, _host_uid: u32, _host_gid: u32) -> Result<()> {
+    Ok(())
+}
+
 fn absolute_path(path: &Path) -> Result<PathBuf> {
     if path.is_absolute() {
         Ok(path.to_owned())
@@ -534,7 +588,7 @@ mod tests {
             height: 720,
             host_boot_id: None,
         };
-        let args = VmController::new(config).qemu_args().join(" ");
+        let args = VmController::new(config.clone()).qemu_args().join(" ");
         assert!(args.contains("q35,accel=kvm"));
         assert!(args.contains("driver=qcow2,node-name=os"));
         assert!(args.contains("-qmp unix:/outside/run/qmp.sock,server=on,wait=off"));
@@ -558,6 +612,12 @@ mod tests {
         assert!(args.contains("-numa node,memdev=guestmem"));
         assert!(args.contains("usb-tablet"));
         assert!(args.ends_with("-S"));
+
+        let paths = config.paths();
+        let virtiofs = virtiofsd_args(&paths, &config.candidate_workspace, 1001, 1002);
+        assert!(virtiofs.contains(&"--sandbox=namespace".to_owned()));
+        assert!(virtiofs.contains(&"--uid-map=:1000:1001:1:".to_owned()));
+        assert!(virtiofs.contains(&"--gid-map=:1000:1002:1:".to_owned()));
     }
 
     #[test]
