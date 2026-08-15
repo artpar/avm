@@ -5,6 +5,13 @@ All notable changes to AVM are documented here. The project follows
 [Conventional Commits](https://www.conventionalcommits.org/) to automate version
 selection and release notes.
 
+## [0.1.2](https://github.com/artpar/avm/compare/v0.1.1...v0.1.2) (2026-08-15)
+
+
+### Bug Fixes
+
+* keep draft releases discoverable ([525b5c9](https://github.com/artpar/avm/commit/525b5c9f14d96b8d2f34229f538ca0b94a825b74))
+
 ## [0.1.1](https://github.com/artpar/avm/compare/v0.1.0...v0.1.1) (2026-08-15)
 
 
