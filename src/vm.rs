@@ -435,7 +435,7 @@ fn current_host_boot_id() -> Result<Option<String>> {
     {
         let boot_id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
             .context("read Linux boot ID")?;
-        return Ok(Some(boot_id.trim().to_owned()));
+        Ok(Some(boot_id.trim().to_owned()))
     }
     #[cfg(not(target_os = "linux"))]
     Ok(None)
