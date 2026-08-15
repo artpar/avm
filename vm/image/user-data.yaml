@@ -135,6 +135,9 @@ write_files:
       #!/bin/sh
       exec /usr/bin/chromium-browser \
         --ozone-platform=wayland \
+        --use-gl=angle \
+        --use-angle=swiftshader-webgl \
+        --enable-unsafe-swiftshader \
         --remote-debugging-address=0.0.0.0 \
         --remote-debugging-port=9222 \
         --user-data-dir=/home/avm/.config/chromium-avm \

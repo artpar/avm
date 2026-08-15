@@ -42,6 +42,7 @@ test-rust: ## Run all Rust tests
 test-node: ## Run browser observer tests
 	npm --prefix supervisor/browser test
 	node --test webui/app.test.mjs
+	node --test fixtures/webgl2/app.test.mjs
 
 test-contracts: ## Run MCP and experiment contract tests
 	node supervisor/mcp/check.mjs
@@ -54,6 +55,8 @@ test-contracts: ## Run MCP and experiment contract tests
 test-scripts: ## Validate release-facing shell helpers
 	bash scripts/linux-smoke.test.sh
 	python3 vm/guest/avm-accessibility-sensor.test.py
+	python3 scripts/png-region-check.test.py
+	python3 vm/image/guest-config.test.py
 
 test: test-rust test-node test-contracts test-scripts ## Run the complete test suite
 
@@ -66,19 +69,33 @@ doc: ## Build local Rust API documentation
 
 install: release ## Install the AVM binary under PREFIX
 	install -d "$(DESTDIR)$(PREFIX)/bin"
+	install -d "$(DESTDIR)$(PREFIX)/libexec/avm"
+	install -d "$(DESTDIR)$(PREFIX)/share/avm/fixtures/webgl2"
 	install -m 0755 "$(BUILD_DIR)/release/avm" "$(DESTDIR)$(PREFIX)/bin/avm"
 	install -m 0755 scripts/linux-smoke.sh "$(DESTDIR)$(PREFIX)/bin/avm-linux-smoke"
+	install -m 0755 scripts/linux-webgl-smoke.sh "$(DESTDIR)$(PREFIX)/bin/avm-linux-webgl-smoke"
+	install -m 0755 scripts/png-region-check.py "$(DESTDIR)$(PREFIX)/libexec/avm/png-region-check.py"
+	install -m 0644 fixtures/webgl2/index.html fixtures/webgl2/app.js \
+		"$(DESTDIR)$(PREFIX)/share/avm/fixtures/webgl2/"
 
 uninstall: ## Remove the installed AVM binary
-	rm -f "$(DESTDIR)$(PREFIX)/bin/avm" "$(DESTDIR)$(PREFIX)/bin/avm-linux-smoke"
+	rm -f "$(DESTDIR)$(PREFIX)/bin/avm" "$(DESTDIR)$(PREFIX)/bin/avm-linux-smoke" \
+		"$(DESTDIR)$(PREFIX)/bin/avm-linux-webgl-smoke"
+	rm -f "$(DESTDIR)$(PREFIX)/libexec/avm/png-region-check.py"
+	rm -f "$(DESTDIR)$(PREFIX)/share/avm/fixtures/webgl2/index.html" \
+		"$(DESTDIR)$(PREFIX)/share/avm/fixtures/webgl2/app.js"
 
 package: release ## Create a checksummed release archive for the host target
 	rm -rf "$(PACKAGE_DIR)/avm-v$(VERSION)-$(TARGET)"
 	mkdir -p "$(PACKAGE_DIR)/avm-v$(VERSION)-$(TARGET)/scripts"
+	mkdir -p "$(PACKAGE_DIR)/avm-v$(VERSION)-$(TARGET)/fixtures/webgl2"
 	mkdir -p "$(PACKAGE_DIR)/avm-v$(VERSION)-$(TARGET)/vm/image"
 	mkdir -p "$(PACKAGE_DIR)/avm-v$(VERSION)-$(TARGET)/vm/guest"
 	cp "$(BUILD_DIR)/release/avm" LICENSE README.md "$(PACKAGE_DIR)/avm-v$(VERSION)-$(TARGET)/"
-	cp scripts/linux-smoke.sh "$(PACKAGE_DIR)/avm-v$(VERSION)-$(TARGET)/scripts/"
+	cp scripts/linux-smoke.sh scripts/linux-webgl-smoke.sh scripts/png-region-check.py \
+		"$(PACKAGE_DIR)/avm-v$(VERSION)-$(TARGET)/scripts/"
+	cp fixtures/webgl2/index.html fixtures/webgl2/app.js \
+		"$(PACKAGE_DIR)/avm-v$(VERSION)-$(TARGET)/fixtures/webgl2/"
 	cp vm/image/build-base.sh vm/image/meta-data.yaml vm/image/README.md \
 		vm/image/ubuntu-noble-amd64.lock vm/image/user-data.yaml \
 		"$(PACKAGE_DIR)/avm-v$(VERSION)-$(TARGET)/vm/image/"
