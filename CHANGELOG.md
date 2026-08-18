@@ -5,6 +5,13 @@ All notable changes to AVM are documented here. The project follows
 [Conventional Commits](https://www.conventionalcommits.org/) to automate version
 selection and release notes.
 
+## [0.4.1](https://github.com/artpar/avm/compare/v0.4.0...v0.4.1) (2026-08-18)
+
+
+### Bug Fixes
+
+* accept canonical guest workspace paths ([d69b50e](https://github.com/artpar/avm/commit/d69b50e2f4efd4127bbc9715d5881dfed2d8b7d0)), closes [#36](https://github.com/artpar/avm/issues/36)
+
 ## [0.4.0](https://github.com/artpar/avm/compare/v0.3.1...v0.4.0) (2026-08-18)
 
 
