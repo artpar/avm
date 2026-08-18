@@ -28,8 +28,10 @@ use avm::{
         AppServerOptions, ApprovalMode, ExecOptions, run_app_server_turn, run_codex_exec_json,
         run_policy_app_server_turn,
     },
+    doctor::{diagnose_remote_channel, diagnose_run},
     event::{EventSink, Provenance, RawEvent, monotonic_ns},
     experience::ExperienceStore,
+    guest_command::GuestCommandClient,
     performance::build_report,
     policy::{
         BrowserEvidenceOptions, DevelopmentDeclarationInput, DiagnosisPlanInput,
@@ -38,7 +40,8 @@ use avm::{
     },
     query::{ExperienceQuery, execute_query},
     remote::{
-        RemoteChannelConfig, TeeEventSink, apply_transfer, prepare_transfer, serve_event_relay,
+        RemoteChannelConfig, TeeEventSink, apply_transfer, prepare_transfer, publication_status,
+        rollback_transfer, serve_event_relay,
     },
     runtime::import_runtime_jsonl,
     session::ExperimentSession,
@@ -48,6 +51,7 @@ use avm::{
     vm::{RunConfig, VmController},
     web::{inspector_endpoint, serve_inspector, start_inspector, stop_inspector},
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::json;
 
@@ -77,6 +81,12 @@ enum Command {
         candidate: PathBuf,
         #[arg(long)]
         state_root: PathBuf,
+        #[arg(long)]
+        guest_ssh_private_key: PathBuf,
+        #[arg(long)]
+        guest_ssh_host_public_key: PathBuf,
+        #[arg(long)]
+        guest_state_path: Vec<PathBuf>,
     },
     Start {
         #[arg(long)]
@@ -97,6 +107,14 @@ enum Command {
     RestoreCheckpoint {
         #[arg(long)]
         run: PathBuf,
+    },
+    PromoteBase {
+        #[arg(long)]
+        run: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        confirm_sanitized: bool,
     },
     Stop {
         #[arg(long)]
@@ -278,6 +296,58 @@ enum Command {
         #[arg(long)]
         prompt: String,
     },
+    Exec {
+        #[arg(long, conflicts_with = "channel", required_unless_present = "channel")]
+        run: Option<PathBuf>,
+        #[arg(long, conflicts_with = "run", required_unless_present = "run")]
+        channel: Option<PathBuf>,
+        #[arg(long, default_value = "/workspace")]
+        cwd: String,
+        #[arg(long)]
+        detach: bool,
+        #[arg(long)]
+        idempotency_key: Option<String>,
+        #[arg(required = true, trailing_var_arg = true)]
+        command: Vec<String>,
+    },
+    ExecList {
+        #[arg(long, conflicts_with = "channel", required_unless_present = "channel")]
+        run: Option<PathBuf>,
+        #[arg(long, conflicts_with = "run", required_unless_present = "run")]
+        channel: Option<PathBuf>,
+    },
+    ExecStatus {
+        #[arg(long, conflicts_with = "channel", required_unless_present = "channel")]
+        run: Option<PathBuf>,
+        #[arg(long, conflicts_with = "run", required_unless_present = "run")]
+        channel: Option<PathBuf>,
+        command_id: uuid::Uuid,
+    },
+    ExecWait {
+        #[arg(long, conflicts_with = "channel", required_unless_present = "channel")]
+        run: Option<PathBuf>,
+        #[arg(long, conflicts_with = "run", required_unless_present = "run")]
+        channel: Option<PathBuf>,
+        #[arg(long, default_value_t = 0)]
+        timeout_ms: u64,
+        command_id: uuid::Uuid,
+    },
+    ExecAttach {
+        #[arg(long, conflicts_with = "channel", required_unless_present = "channel")]
+        run: Option<PathBuf>,
+        #[arg(long, conflicts_with = "run", required_unless_present = "run")]
+        channel: Option<PathBuf>,
+        command_id: uuid::Uuid,
+    },
+    ExecCancel {
+        #[arg(long, conflicts_with = "channel", required_unless_present = "channel")]
+        run: Option<PathBuf>,
+        #[arg(long, conflicts_with = "run", required_unless_present = "run")]
+        channel: Option<PathBuf>,
+        #[arg(long, default_value_t = 5_000)]
+        grace_ms: u64,
+        command_id: uuid::Uuid,
+    },
     RemoteChannelCreate {
         #[arg(long)]
         local_candidate: PathBuf,
@@ -297,6 +367,49 @@ enum Command {
     RemotePublish {
         #[arg(long)]
         channel: PathBuf,
+        #[arg(long)]
+        force: bool,
+    },
+    RemoteRollback {
+        #[arg(long)]
+        channel: PathBuf,
+        #[arg(long)]
+        transfer_id: uuid::Uuid,
+    },
+    RemoteConnect {
+        #[arg(long)]
+        channel: PathBuf,
+        #[arg(long)]
+        browser: bool,
+        #[arg(long)]
+        web_ui: Vec<u16>,
+        #[arg(long)]
+        json: bool,
+    },
+    RemoteConnectStatus {
+        #[arg(long)]
+        channel: PathBuf,
+        #[arg(long)]
+        connection: PathBuf,
+    },
+    RemoteConnectStop {
+        #[arg(long)]
+        channel: PathBuf,
+        #[arg(long)]
+        connection: PathBuf,
+    },
+    Doctor {
+        #[arg(long)]
+        run: PathBuf,
+        #[arg(long)]
+        channel: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(hide = true)]
+    DoctorHost {
+        #[arg(long)]
+        run: PathBuf,
     },
     PolicyInit {
         #[arg(long)]
@@ -379,6 +492,20 @@ enum Command {
         transfer_id: uuid::Uuid,
         #[arg(long)]
         sha256: String,
+        #[arg(long)]
+        source_fingerprint: String,
+    },
+    #[command(hide = true)]
+    PublicationStatus {
+        #[arg(long)]
+        run: PathBuf,
+    },
+    #[command(hide = true)]
+    RollbackTransfer {
+        #[arg(long)]
+        run: PathBuf,
+        #[arg(long)]
+        transfer_id: uuid::Uuid,
     },
     #[cfg(target_os = "linux")]
     Capture {
@@ -608,10 +735,20 @@ async fn main() -> Result<()> {
             base_image,
             candidate,
             state_root,
+            guest_ssh_private_key,
+            guest_ssh_host_public_key,
+            guest_state_path,
         } => {
-            let config = RunConfig::new(&base_image, &candidate, &state_root)?;
+            let config = RunConfig::new(
+                &base_image,
+                &candidate,
+                &state_root,
+                guest_state_path,
+                &guest_ssh_private_key,
+                &guest_ssh_host_public_key,
+            )?;
             let controller = VmController::new(config);
-            controller.create_overlay()?;
+            controller.create_overlay(&candidate)?;
             println!("{}", controller.config().paths().config.display());
         }
         Command::Start { run } => {
@@ -687,6 +824,36 @@ async fn main() -> Result<()> {
                 "vm.checkpoint.restore_completed",
                 json!({"tag": "avm-clean"}),
             )?;
+        }
+        Command::PromoteBase {
+            run,
+            output,
+            confirm_sanitized,
+        } => {
+            let config = load_run(&run)?;
+            lifecycle(
+                &config,
+                "vm.base_promotion.requested",
+                json!({"output": output, "sanitizedAttestation": confirm_sanitized}),
+            )?;
+            match VmController::new(config.clone()).promote_base(&output, confirm_sanitized) {
+                Ok(promoted) => {
+                    lifecycle(
+                        &config,
+                        "vm.base_promotion.completed",
+                        serde_json::to_value(&promoted)?,
+                    )?;
+                    println!("{}", serde_json::to_string_pretty(&promoted)?);
+                }
+                Err(error) => {
+                    let _ = lifecycle(
+                        &config,
+                        "vm.base_promotion.failed",
+                        json!({"output": output, "message": error.to_string()}),
+                    );
+                    return Err(error);
+                }
+            }
         }
         Command::Stop { run } => {
             let config = load_run(&run)?;
@@ -866,7 +1033,7 @@ async fn main() -> Result<()> {
             };
             let published_repository_fingerprint = match (&channel, publish_after_turn) {
                 (Some(channel), true) => {
-                    Some(channel.publish_workspace(context.id, sink.as_ref())?)
+                    Some(channel.publish_workspace(context.id, sink.as_ref(), false)?)
                 }
                 _ => None,
             };
@@ -910,6 +1077,158 @@ async fn main() -> Result<()> {
                 }))?
             );
         }
+        Command::Exec {
+            run,
+            channel,
+            cwd,
+            detach,
+            idempotency_key,
+            command,
+        } => {
+            let result = match (run, channel) {
+                (Some(run), None) => {
+                    let config = load_run(&run)?;
+                    let client = GuestCommandClient::new(config.clone())?;
+                    let mut result = client.start(&cwd, command, idempotency_key)?;
+                    record_guest_command_operation(&config, "accepted", &result)?;
+                    if !detach {
+                        let command_id = command_id_from_response(&result)?;
+                        result = client.wait(command_id, 0)?;
+                        if result["state"]
+                            .as_str()
+                            .is_some_and(is_terminal_command_state)
+                        {
+                            record_guest_command_operation(&config, "terminal", &result)?;
+                            result = client.attach(command_id)?;
+                            record_guest_command_output(&config, &result)?;
+                        }
+                    }
+                    result
+                }
+                (None, Some(channel)) => {
+                    let channel = RemoteChannelConfig::load(channel)?;
+                    let mut result =
+                        channel.guest_exec_start(&cwd, &command, idempotency_key.as_deref())?;
+                    if !detach {
+                        let command_id = command_id_from_response(&result)?;
+                        result = channel.guest_exec_operation(
+                            "exec-wait",
+                            Some(command_id),
+                            Some(("timeout-ms", 0)),
+                        )?;
+                        if result["state"]
+                            .as_str()
+                            .is_some_and(is_terminal_command_state)
+                        {
+                            result = channel.guest_exec_operation(
+                                "exec-attach",
+                                Some(command_id),
+                                None,
+                            )?;
+                        }
+                    }
+                    result
+                }
+                _ => bail!("use exactly one of --run or --channel"),
+            };
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Command::ExecList { run, channel } => {
+            let result =
+                match (run, channel) {
+                    (Some(run), None) => GuestCommandClient::new(load_run(&run)?)?.list()?,
+                    (None, Some(channel)) => RemoteChannelConfig::load(channel)?
+                        .guest_exec_operation("exec-list", None, None)?,
+                    _ => bail!("use exactly one of --run or --channel"),
+                };
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Command::ExecStatus {
+            run,
+            channel,
+            command_id,
+        } => {
+            let result =
+                match (run, channel) {
+                    (Some(run), None) => {
+                        GuestCommandClient::new(load_run(&run)?)?.status(command_id)?
+                    }
+                    (None, Some(channel)) => RemoteChannelConfig::load(channel)?
+                        .guest_exec_operation("exec-status", Some(command_id), None)?,
+                    _ => bail!("use exactly one of --run or --channel"),
+                };
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Command::ExecWait {
+            run,
+            channel,
+            timeout_ms,
+            command_id,
+        } => {
+            let result = match (run, channel) {
+                (Some(run), None) => {
+                    let config = load_run(&run)?;
+                    let result =
+                        GuestCommandClient::new(config.clone())?.wait(command_id, timeout_ms)?;
+                    if result["state"]
+                        .as_str()
+                        .is_some_and(is_terminal_command_state)
+                    {
+                        record_guest_command_operation(&config, "terminal", &result)?;
+                    }
+                    result
+                }
+                (None, Some(channel)) => RemoteChannelConfig::load(channel)?.guest_exec_operation(
+                    "exec-wait",
+                    Some(command_id),
+                    Some(("timeout-ms", timeout_ms)),
+                )?,
+                _ => bail!("use exactly one of --run or --channel"),
+            };
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Command::ExecAttach {
+            run,
+            channel,
+            command_id,
+        } => {
+            let result =
+                match (run, channel) {
+                    (Some(run), None) => {
+                        let config = load_run(&run)?;
+                        let result = GuestCommandClient::new(config.clone())?.attach(command_id)?;
+                        record_guest_command_output(&config, &result)?;
+                        result
+                    }
+                    (None, Some(channel)) => RemoteChannelConfig::load(channel)?
+                        .guest_exec_operation("exec-attach", Some(command_id), None)?,
+                    _ => bail!("use exactly one of --run or --channel"),
+                };
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Command::ExecCancel {
+            run,
+            channel,
+            grace_ms,
+            command_id,
+        } => {
+            let result = match (run, channel) {
+                (Some(run), None) => {
+                    let config = load_run(&run)?;
+                    let result =
+                        GuestCommandClient::new(config.clone())?.cancel(command_id, grace_ms)?;
+                    record_guest_command_operation(&config, "cancelled", &result)?;
+                    result
+                }
+                (None, Some(channel)) => RemoteChannelConfig::load(channel)?.guest_exec_operation(
+                    "exec-cancel",
+                    Some(command_id),
+                    Some(("grace-ms", grace_ms)),
+                )?,
+                _ => bail!("use exactly one of --run or --channel"),
+            };
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
         Command::RemoteChannelCreate {
             local_candidate,
             state_root,
@@ -930,14 +1249,88 @@ async fn main() -> Result<()> {
             )?;
             println!("{}", channel.config_path().display());
         }
-        Command::RemotePublish { channel } => {
+        Command::RemotePublish { channel, force } => {
             let channel = RemoteChannelConfig::load(channel)?;
             let sink = channel.connect_event_sink()?;
-            let fingerprint = channel.publish_workspace(channel.run_id, sink.as_ref())?;
+            let receipt = channel.publish_workspace(channel.run_id, sink.as_ref(), force)?;
+            println!("{}", serde_json::to_string_pretty(&receipt)?);
+        }
+        Command::RemoteRollback {
+            channel,
+            transfer_id,
+        } => {
+            let channel = RemoteChannelConfig::load(channel)?;
+            let fingerprint = channel.rollback_publication(transfer_id)?;
             println!(
                 "{}",
                 json!({"runId": channel.run_id, "repositoryFingerprint": fingerprint})
             );
+        }
+        Command::RemoteConnect {
+            channel,
+            browser,
+            web_ui,
+            json,
+        } => {
+            let channel = RemoteChannelConfig::load(channel)?;
+            let connection = channel.connect(browser, &web_ui)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&connection)?);
+            } else {
+                println!("connection: {}", connection.id);
+                for endpoint in connection.endpoints {
+                    println!("{}: {}", endpoint.purpose, endpoint.url);
+                }
+                println!(
+                    "record: {}",
+                    channel
+                        .state_dir
+                        .join("connections")
+                        .join(connection.id.to_string())
+                        .join("connection.json")
+                        .display()
+                );
+            }
+        }
+        Command::RemoteConnectStatus {
+            channel,
+            connection,
+        } => println!(
+            "{}",
+            serde_json::to_string_pretty(
+                &RemoteChannelConfig::load(channel)?.connection_status(&connection)?
+            )?
+        ),
+        Command::RemoteConnectStop {
+            channel,
+            connection,
+        } => println!(
+            "{}",
+            serde_json::to_string_pretty(
+                &RemoteChannelConfig::load(channel)?.stop_connection(&connection)?
+            )?
+        ),
+        Command::Doctor { run, channel, json } => {
+            let report = if let Some(channel) = channel.as_deref() {
+                diagnose_remote_channel(&run, channel)?
+            } else {
+                diagnose_run(&run, None).await?
+            };
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!("{}", report.render_human());
+            }
+            let code = report.exit_code();
+            if code != 0 {
+                use std::io::Write as _;
+                std::io::stdout().flush()?;
+                std::process::exit(code);
+            }
+        }
+        Command::DoctorHost { run } => {
+            let report = diagnose_run(&run, None).await?;
+            println!("{}", serde_json::to_string(&report)?);
         }
         Command::PolicyInit { target, config } => policy_init(&target, config.as_deref())?,
         Command::PolicyDeclare { policy, input } => policy_declare(&policy, &input)?,
@@ -979,7 +1372,17 @@ async fn main() -> Result<()> {
             run,
             transfer_id,
             sha256,
-        } => println!("{}", apply_transfer(&run, transfer_id, &sha256)?),
+            source_fingerprint,
+        } => println!(
+            "{}",
+            apply_transfer(&run, transfer_id, &sha256, &source_fingerprint)?
+        ),
+        Command::PublicationStatus { run } => {
+            println!("{}", serde_json::to_string(&publication_status(&run)?)?)
+        }
+        Command::RollbackTransfer { run, transfer_id } => {
+            println!("{}", rollback_transfer(&run, transfer_id)?)
+        }
         #[cfg(target_os = "linux")]
         Command::Capture { run, output } => {
             let config = load_run(&run)?;
@@ -1141,21 +1544,7 @@ fn lifecycle(config: &RunConfig, kind: &str, payload: serde_json::Value) -> Resu
 async fn destroy_run(path: &Path) -> Result<()> {
     let config = load_run(path)?;
     stop_inspector(&config)?;
-    let controller = VmController::new(config.clone());
-    if controller.is_running() {
-        controller.stop().await?;
-    }
-    let saved = std::fs::canonicalize(config.paths().config)?;
-    let state = std::fs::canonicalize(&config.state_dir)?;
-    ensure!(
-        saved.parent() == Some(state.as_path()),
-        "run.json is not directly inside the state directory"
-    );
-    ensure!(
-        state.file_name().and_then(|name| name.to_str()) == Some(&config.id.to_string()),
-        "state directory does not match run ID"
-    );
-    std::fs::remove_dir_all(&state).with_context(|| format!("destroy run {}", state.display()))?;
+    VmController::new(config.clone()).destroy().await?;
     println!("destroyed {}", config.id);
     Ok(())
 }
@@ -1169,6 +1558,70 @@ fn record_canonical(config: &RunConfig, event: RawEvent) -> Result<()> {
     let paths = config.paths();
     ExperienceEventSink::open(paths.timeline, paths.events, &config.candidate_workspace)?
         .record(event)
+}
+
+fn command_id_from_response(response: &serde_json::Value) -> Result<uuid::Uuid> {
+    uuid::Uuid::parse_str(
+        response["commandId"]
+            .as_str()
+            .context("guest command response omitted commandId")?,
+    )
+    .context("guest command response has invalid commandId")
+}
+
+fn is_terminal_command_state(state: &str) -> bool {
+    matches!(state, "exited" | "cancelled" | "failed_to_start" | "lost")
+}
+
+fn record_guest_command_operation(
+    config: &RunConfig,
+    operation: &str,
+    response: &serde_json::Value,
+) -> Result<()> {
+    let mut payload = response.clone();
+    if let Some(object) = payload.as_object_mut() {
+        object.remove("idempotencyKey");
+        object.remove("stdoutBase64");
+        object.remove("stderrBase64");
+    }
+    record_canonical(
+        config,
+        RawEvent::observed(
+            config.id,
+            "guest-command",
+            &format!("guest.command.{operation}"),
+            payload,
+        ),
+    )
+}
+
+fn record_guest_command_output(config: &RunConfig, response: &serde_json::Value) -> Result<()> {
+    let paths = config.paths();
+    let artifacts = ArtifactStore::new(&paths.artifacts)?;
+    let stdout = BASE64
+        .decode(response["stdoutBase64"].as_str().unwrap_or_default())
+        .context("decode retained guest stdout")?;
+    let stderr = BASE64
+        .decode(response["stderrBase64"].as_str().unwrap_or_default())
+        .context("decode retained guest stderr")?;
+    let stdout_ref = artifacts.put(&stdout)?;
+    let stderr_ref = artifacts.put(&stderr)?;
+    let mut event = RawEvent::observed(
+        config.id,
+        "guest-command",
+        "guest.command.output.stored",
+        json!({
+            "commandId": response["commandId"],
+            "stdoutArtifact": stdout_ref,
+            "stderrArtifact": stderr_ref,
+            "stdoutRetainedBytes": stdout.len(),
+            "stderrRetainedBytes": stderr.len(),
+            "stdoutDroppedBytes": response["stdoutDroppedBytes"],
+            "stderrDroppedBytes": response["stderrDroppedBytes"],
+        }),
+    );
+    event.artifact_refs = vec![stdout_ref, stderr_ref];
+    record_canonical(config, event)
 }
 
 struct PolicyTarget {
@@ -2333,6 +2786,50 @@ async fn drag_proof(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn guest_exec_cli_preserves_argv_boundaries() {
+        let cli = Cli::try_parse_from([
+            "avm",
+            "exec",
+            "--run",
+            "/tmp/run.json",
+            "--",
+            "printf",
+            "%s",
+            "a b",
+            "$()",
+        ])
+        .unwrap();
+        let Command::Exec { command, .. } = cli.command else {
+            panic!("parsed the wrong command")
+        };
+        assert_eq!(command, ["printf", "%s", "a b", "$()"]);
+        assert!(
+            Cli::try_parse_from([
+                "avm",
+                "exec",
+                "--channel",
+                "/tmp/channel.json",
+                "--",
+                "true"
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "avm",
+                "exec",
+                "--run",
+                "/tmp/run.json",
+                "--channel",
+                "/tmp/channel.json",
+                "--",
+                "true"
+            ])
+            .is_err()
+        );
+    }
     use avm::timeline::TimelineStore;
 
     #[test]
@@ -2419,9 +2916,17 @@ mod tests {
         let candidate = temp.path().join("candidate");
         let state = temp.path().join("state");
         let base = temp.path().join("base.qcow2");
+        let guest_key = temp.path().join("guest-key");
+        let host_key = temp.path().join("host-key.pub");
         std::fs::create_dir(&candidate).unwrap();
         std::fs::write(&base, b"fixture").unwrap();
-        let run = RunConfig::new(&base, &candidate, &state).unwrap();
+        std::fs::write(&guest_key, b"fixture").unwrap();
+        std::fs::write(&host_key, b"fixture").unwrap();
+        let run = RunConfig::new(&base, &candidate, &state, vec![], &guest_key, &host_key).unwrap();
+        let bootstrap = run.workspace_root.join("generations/bootstrap");
+        std::fs::create_dir_all(&bootstrap).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("generations/bootstrap", &run.candidate_workspace).unwrap();
         run.save().unwrap();
 
         let context =

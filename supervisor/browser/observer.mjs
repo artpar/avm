@@ -156,46 +156,57 @@ async function observePage(page, artifactsDir) {
     cdp.send("Runtime.enable"),
   ]);
 
+  let stopped = false;
   let snapshotTimer = null;
+  const captures = new Set();
+  const capture = (reason) => {
+    if (stopped) return Promise.resolve();
+    const pending = captureSemanticSnapshot(page, cdp, reason, artifactsDir)
+      .catch((error) => {
+        if (!stopped) {
+          emit("browser", "browser.snapshot.failed", { reason, error: String(error) });
+        }
+      })
+      .finally(() => captures.delete(pending));
+    captures.add(pending);
+    return pending;
+  };
   const scheduleSnapshot = (reason) => {
+    if (stopped) return;
     clearTimeout(snapshotTimer);
     snapshotTimer = setTimeout(() => {
-      captureSemanticSnapshot(page, cdp, reason, artifactsDir).catch((error) =>
-        emit("browser", "browser.snapshot.failed", { reason, error: String(error) }),
-      );
+      snapshotTimer = null;
+      void capture(reason);
     }, 100);
   };
 
-  page.on("framenavigated", (frame) => {
+  const onFrameNavigated = (frame) => {
     if (frame === page.mainFrame()) {
       emit("browser", "browser.navigation", { url: frame.url() });
       scheduleSnapshot("navigation");
     }
-  });
-  page.on("console", (message) =>
+  };
+  const onConsole = (message) =>
     emit("console", "browser.console.message", {
       type: message.type(),
       text: message.text(),
       location: message.location(),
-    }),
-  );
-  page.on("pageerror", (error) =>
+    });
+  const onPageError = (error) =>
     emit("console", "browser.javascript.exception", {
       name: error.name,
       message: error.message,
       stack: error.stack,
-    }),
-  );
-  page.on("request", (request) =>
+    });
+  const onRequest = (request) =>
     emit("network", "browser.network.request", {
       url: request.url(),
       method: request.method(),
       resourceType: request.resourceType(),
       isNavigationRequest: request.isNavigationRequest(),
       postData: request.postData(),
-    }),
-  );
-  page.on("response", async (response) => {
+    });
+  const onResponse = async (response) => {
     let contentType = null;
     let headersError = null;
     try {
@@ -211,8 +222,8 @@ async function observePage(page, artifactsDir) {
       contentType,
       headersError,
     });
-  });
-  page.on("websocket", (socket) => {
+  };
+  const onWebSocket = (socket) => {
     emit("network", "browser.websocket.opened", { url: socket.url() });
     socket.on("framesent", (event) =>
       emit("network", "browser.websocket.frame_sent", {
@@ -229,7 +240,14 @@ async function observePage(page, artifactsDir) {
     socket.on("close", () =>
       emit("network", "browser.websocket.closed", { url: socket.url() }),
     );
-  });
+  };
+
+  page.on("framenavigated", onFrameNavigated);
+  page.on("console", onConsole);
+  page.on("pageerror", onPageError);
+  page.on("request", onRequest);
+  page.on("response", onResponse);
+  page.on("websocket", onWebSocket);
 
   await page.exposeBinding("__avmDomMutation", (_source, mutation) => {
     emit("browser", "browser.dom.mutation", mutation);
@@ -256,10 +274,47 @@ async function observePage(page, artifactsDir) {
       attributes: true,
       characterData: true,
     });
+    globalThis.__avmMutationObserver = observer;
   };
   await page.addInitScript(installMutationObserver);
   await page.evaluate(installMutationObserver);
-  await captureSemanticSnapshot(page, cdp, "observer_attached", artifactsDir);
+  await capture("observer_attached");
+
+  return async () => {
+    if (stopped) return;
+    stopped = true;
+    clearTimeout(snapshotTimer);
+    page.off("framenavigated", onFrameNavigated);
+    page.off("console", onConsole);
+    page.off("pageerror", onPageError);
+    page.off("request", onRequest);
+    page.off("response", onResponse);
+    page.off("websocket", onWebSocket);
+    if (!page.isClosed()) {
+      await page
+        .evaluate(() => {
+          globalThis.__avmMutationObserver?.disconnect();
+          delete globalThis.__avmMutationObserver;
+          globalThis.__avmMutationObserverInstalled = false;
+        })
+        .catch(() => {});
+    }
+    await Promise.allSettled([...captures]);
+    await cdp.detach().catch(() => {});
+  };
+}
+
+function withTimeout(promise, timeoutMs, description) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`${description} exceeded ${timeoutMs}ms`)),
+        timeoutMs,
+      );
+    }),
+  ]).finally(() => clearTimeout(timer));
 }
 
 export async function runObserver(options) {
@@ -272,12 +327,23 @@ export async function runObserver(options) {
   const context = contexts[0];
   await context.tracing.start({ screenshots: true, snapshots: true, sources: false });
   const observed = new WeakSet();
+  const disposers = new Set();
+  const attachments = new Set();
   const attach = async (page) => {
     if (observed.has(page)) return;
     observed.add(page);
-    await observePage(page, options.artifactsDir);
+    const dispose = await observePage(page, options.artifactsDir);
+    disposers.add(dispose);
   };
-  context.on("page", (page) => attach(page).catch((error) => emit("browser", "browser.attach.failed", { error: String(error) })));
+  const onPage = (page) => {
+    const pending = attach(page)
+      .catch((error) =>
+        emit("browser", "browser.attach.failed", { error: String(error) }),
+      )
+      .finally(() => attachments.delete(pending));
+    attachments.add(pending);
+  };
+  context.on("page", onPage);
   await Promise.all(context.pages().map(attach));
   emit("browser", "browser.observer.started", {
     endpoint: options.endpoint,
@@ -288,6 +354,9 @@ export async function runObserver(options) {
     let timer = null;
     const finish = () => {
       clearTimeout(timer);
+      process.off("SIGINT", finish);
+      process.off("SIGTERM", finish);
+      browser.off("disconnected", finish);
       resolvePromise();
     };
     process.once("SIGINT", finish);
@@ -295,9 +364,23 @@ export async function runObserver(options) {
     browser.once("disconnected", finish);
     if (options.durationMs > 0) timer = setTimeout(finish, options.durationMs);
   });
-  await context.tracing.stop({ path: options.trace });
-  emit("browser", "browser.observer.completed", { trace: options.trace });
-  await browser.close();
+  context.off("page", onPage);
+  await Promise.allSettled([...attachments]);
+  await withTimeout(
+    Promise.allSettled([...disposers].map((dispose) => dispose())),
+    5_000,
+    "browser observer disposal",
+  );
+  try {
+    await withTimeout(
+      context.tracing.stop({ path: options.trace }),
+      10_000,
+      "browser trace finalization",
+    );
+    emit("browser", "browser.observer.completed", { trace: options.trace });
+  } finally {
+    await withTimeout(browser.close(), 5_000, "browser disconnect").catch(() => {});
+  }
 }
 
 if (resolve(process.argv[1] ?? "") === fileURLToPath(import.meta.url)) {

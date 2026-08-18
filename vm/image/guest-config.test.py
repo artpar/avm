@@ -20,6 +20,19 @@ class GuestGraphicsConfigTests(unittest.TestCase):
         self.assertIn("gl=off,audiodev=avm-audio", vm)
         self.assertIn("display.scanout_dmabuf_unsupported", display)
 
+    def test_command_agent_and_pinned_host_key_are_built_into_contract(self):
+        config = (ROOT / "vm/image/user-data.yaml").read_text(encoding="utf-8")
+        builder = (ROOT / "vm/image/build-base.sh").read_text(encoding="utf-8")
+        self.assertIn("/usr/local/bin/avm-command-agent", config)
+        self.assertIn("@@COMMAND_AGENT_B64@@", config)
+        self.assertIn("ssh_host_ed25519_key.pub", builder)
+        self.assertIn("avm_ssh_host_ed25519_key.pub", builder)
+
+    def test_workspace_mount_has_stable_root_and_current_link(self):
+        config = (ROOT / "vm/image/user-data.yaml").read_text(encoding="utf-8")
+        self.assertIn("Where=/avm-workspace", config)
+        self.assertIn("L /workspace - - - - /avm-workspace/current", config)
+
 
 if __name__ == "__main__":
     unittest.main()

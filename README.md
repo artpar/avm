@@ -106,18 +106,21 @@ sudo make install
 Build the pinned Ubuntu guest image:
 
 ```sh
-sudo mkdir -p /var/lib/avm/images/noble-v1
-sudo chown "$USER" /var/lib/avm/images/noble-v1
-vm/image/build-base.sh /var/lib/avm/images/noble-v1
+sudo mkdir -p /var/lib/avm/images/noble
+sudo chown "$USER" /var/lib/avm/images/noble
+vm/image/build-base.sh /var/lib/avm/images/noble
 ```
 
 Create a candidate directory and a fresh run:
 
 ```sh
 RUN_CONFIG=$(avm create-run \
-  --base-image /var/lib/avm/images/noble-v1/avm-base.qcow2 \
+  --base-image /var/lib/avm/images/noble/avm-base.qcow2 \
   --candidate /srv/candidates/example \
-  --state-root /var/lib/avm/runs)
+  --state-root /var/lib/avm/runs \
+  --guest-ssh-private-key /var/lib/avm/images/noble/avm_ed25519 \
+  --guest-ssh-host-public-key /var/lib/avm/images/noble/avm_ssh_host_ed25519_key.pub \
+  --guest-state-path .cache)
 
 avm start --run "$RUN_CONFIG"
 avm status --run "$RUN_CONFIG"
@@ -149,6 +152,43 @@ Stop the nested guest when finished:
 avm stop --run "$RUN_CONFIG"
 ```
 
+Run development commands through AVM so they remain discoverable after a
+client disconnect and can be waited on, attached to, or cancelled by ID:
+
+```sh
+avm exec --run "$RUN_CONFIG" --cwd /workspace -- npm test
+avm exec-list --run "$RUN_CONFIG"
+avm exec-wait --run "$RUN_CONFIG" COMMAND_ID
+avm exec-attach --run "$RUN_CONFIG" COMMAND_ID
+avm exec-cancel --run "$RUN_CONFIG" COMMAND_ID
+```
+
+The same commands accept `--channel "$CHANNEL"` instead of `--run` when the
+run lives on the configured GCE host.
+
+Runs require the restricted command agent identity and pinned SSH host key at
+creation. There is no alternate execution transport.
+
+Check readiness without changing the run:
+
+```sh
+avm doctor --run "$RUN_CONFIG"
+avm doctor --run "$RUN_CONFIG" --json
+```
+
+To preserve a provisioned guest OS/toolchain across host boots, shut the guest
+down cleanly, stop the run, sanitize guest credentials and browser state, then
+flatten its disk into a checksum-bound reusable base:
+
+```sh
+avm promote-base --run "$RUN_CONFIG" \
+  --output /var/lib/avm/images/workstation.qcow2 \
+  --confirm-sanitized
+```
+
+Promotion captures the guest disk only. The separately mounted `/workspace`
+is not included.
+
 Run `avm-linux-smoke "$RUN_CONFIG"` for the real framebuffer/input
 acceptance check and `avm-linux-webgl-smoke "$RUN_CONFIG"` for the software
 WebGL2 browser/framebuffer qualification. See the [Getting Started wiki](https://github.com/artpar/avm/wiki/Getting-Started)
@@ -172,6 +212,28 @@ CHANNEL=$(avm remote-channel-create \
 
 avm remote-publish --channel "$CHANNEL"
 ```
+
+AVM materializes each publication as a complete immutable generation and
+atomically switches the stable `current` link. Declared guest-state paths live
+outside those generations and are linked into each one. Publication and
+rollback reject while tracked guest commands are active; the VM may remain
+running. To select the retained predecessor of a publication, run
+`avm remote-rollback --channel "$CHANNEL" --transfer-id TRANSFER_ID`.
+An unchanged source tree returns an `unchanged` receipt without creating or
+uploading an archive. Use `--force` only when a fresh generation is required.
+
+AVM can own the complete outer-host and nested-guest forwarding chain:
+
+```sh
+avm remote-connect --channel "$CHANNEL" --browser --web-ui 3000
+avm remote-connect-status --channel "$CHANNEL" --connection /path/to/connection.json
+avm remote-connect-stop --channel "$CHANNEL" --connection /path/to/connection.json
+```
+
+The connection receipt contains the local browser and Web UI URLs. Browser
+readiness requires a valid Chromium `/json/version` response; Web UI readiness
+checks transport reachability only. Each process is tagged with its connection
+ID so stop never signals an unowned process.
 
 Create `/path/outside/candidate/avm-mcp.json`:
 
@@ -208,12 +270,12 @@ for tunnel requirements and the full tool map.
 
 | Area | Commands |
 | --- | --- |
-| VM lifecycle | `create-run`, `start`, `status`, `reset`, `checkpoint`, `restore-checkpoint`, `stop`, `destroy-run` |
+| VM lifecycle | `create-run`, `start`, `status`, `reset`, `checkpoint`, `restore-checkpoint`, `promote-base`, `stop`, `destroy-run`, `doctor` |
 | Visual history | `capture`, `observe`, `history`, `frame`, `replay`, `temporal-analyze` |
 | Guest input | `act-pointer`, `act-click`, `act-double-click`, `act-button`, `act-drag`, `act-scroll`, `act-key`, `act-type`, `act-wait` |
 | Rich observation | `browser-observe`, `browser-correlate`, `accessibility-observe`, `audio-observe`, `runtime-import`, `performance-measure` |
 | Experience | `experience-query`, `vlm-observe`, `performance-report` |
-| Agents and remote | `session-create`, `codex-turn`, `codex-exec`, `remote-channel-create`, `remote-publish` |
+| Agents and remote | `session-create`, `codex-turn`, `codex-exec`, `exec`, `exec-list`, `exec-status`, `exec-wait`, `exec-attach`, `exec-cancel`, `remote-channel-create`, `remote-publish`, `remote-rollback`, `remote-connect`, `remote-connect-status`, `remote-connect-stop`, `doctor` |
 | Evidence policy | `policy-init`, `policy-declare`, `policy-status`, `policy-diagnose`, `evidence-command`, `evidence-list`, `evidence-browser` |
 
 Run `avm help COMMAND` for exact options. Some capture, audio, performance, and

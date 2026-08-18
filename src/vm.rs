@@ -1,5 +1,6 @@
 use std::{
     fs::{File, OpenOptions},
+    io::Write,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     time::Duration,
@@ -7,11 +8,14 @@ use std::{
 
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use tokio::time::sleep;
 use uuid::Uuid;
 
-use crate::qmp::QmpClient;
+use crate::{
+    coordination::RunLock, guest_command::active_command_ids, integrity::file_sha256,
+    qmp::QmpClient,
+};
 
 const GUEST_WORKSPACE_UID: u32 = 1000;
 const GUEST_WORKSPACE_GID: u32 = 1000;
@@ -21,14 +25,19 @@ const GUEST_WORKSPACE_GID: u32 = 1000;
 pub struct RunConfig {
     pub id: Uuid,
     pub base_image: PathBuf,
+    pub workspace_root: PathBuf,
     pub candidate_workspace: PathBuf,
+    pub guest_state_paths: Vec<PathBuf>,
     pub state_dir: PathBuf,
     pub memory_mib: u32,
     pub cpus: u8,
     pub width: u32,
     pub height: u32,
-    #[serde(default)]
     pub host_boot_id: Option<String>,
+    pub guest_ssh_port: u16,
+    pub guest_ssh_user: String,
+    pub guest_ssh_private_key: PathBuf,
+    pub guest_ssh_host_public_key: PathBuf,
 }
 
 #[derive(Clone, Debug)]
@@ -52,7 +61,14 @@ pub struct RunPaths {
 }
 
 impl RunConfig {
-    pub fn new(base_image: &Path, candidate_workspace: &Path, state_root: &Path) -> Result<Self> {
+    pub fn new(
+        base_image: &Path,
+        candidate_workspace: &Path,
+        state_root: &Path,
+        guest_state_paths: Vec<PathBuf>,
+        guest_ssh_private_key: &Path,
+        guest_ssh_host_public_key: &Path,
+    ) -> Result<Self> {
         let base_image = base_image
             .canonicalize()
             .context("canonicalize base image")?;
@@ -60,6 +76,7 @@ impl RunConfig {
             .canonicalize()
             .context("canonicalize candidate workspace")?;
         ensure!(base_image.is_file(), "base image must be a regular file");
+        verify_base_integrity(&base_image)?;
         ensure!(
             candidate_workspace.is_dir(),
             "candidate workspace must be a directory"
@@ -74,16 +91,39 @@ impl RunConfig {
             "state root must be outside the candidate workspace"
         );
         let id = Uuid::new_v4();
+        let state_dir = state_root.join(id.to_string());
+        let workspace_root = state_dir.join("workspace");
+        let guest_state_paths = validate_guest_state_paths(guest_state_paths)?;
+        let guest_ssh_private_key = guest_ssh_private_key
+            .canonicalize()
+            .context("canonicalize guest SSH private key")?;
+        let guest_ssh_host_public_key = guest_ssh_host_public_key
+            .canonicalize()
+            .context("canonicalize guest SSH host public key")?;
+        ensure!(
+            guest_ssh_private_key.is_file(),
+            "guest SSH private key must be a file"
+        );
+        ensure!(
+            guest_ssh_host_public_key.is_file(),
+            "guest SSH host public key must be a file"
+        );
         Ok(Self {
             id,
             base_image,
-            candidate_workspace,
-            state_dir: state_root.join(id.to_string()),
+            candidate_workspace: workspace_root.join("current"),
+            workspace_root,
+            guest_state_paths,
+            state_dir,
             memory_mib: 4096,
             cpus: 4,
             width: 1280,
             height: 720,
             host_boot_id: current_host_boot_id()?,
+            guest_ssh_port: 2222,
+            guest_ssh_user: "avm".into(),
+            guest_ssh_private_key,
+            guest_ssh_host_public_key,
         })
     }
 
@@ -109,6 +149,7 @@ impl RunConfig {
     }
 
     pub fn save(&self) -> Result<()> {
+        self.validate_contract()?;
         std::fs::create_dir_all(&self.state_dir)?;
         std::fs::write(self.paths().config, serde_json::to_vec_pretty(self)?)?;
         Ok(())
@@ -116,7 +157,36 @@ impl RunConfig {
 
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let bytes = std::fs::read(path.as_ref())?;
-        serde_json::from_slice(&bytes).context("decode run configuration")
+        let config: Self = serde_json::from_slice(&bytes).context("decode run configuration")?;
+        config.validate_contract()?;
+        Ok(config)
+    }
+
+    fn validate_contract(&self) -> Result<()> {
+        ensure!(
+            self.workspace_root == self.state_dir.join("workspace"),
+            "workspace root must be the run-owned workspace directory"
+        );
+        ensure!(
+            self.candidate_workspace == self.workspace_root.join("current"),
+            "candidate workspace must be the stable current-generation link"
+        );
+        ensure!(
+            validate_guest_state_paths(self.guest_state_paths.clone())? == self.guest_state_paths,
+            "guest state paths must be sorted, unique, and disjoint"
+        );
+        ensure!(
+            self.guest_ssh_port == 2222 && self.guest_ssh_user == "avm",
+            "guest command endpoint does not match the image contract"
+        );
+        ensure!(
+            self.base_image.is_absolute()
+                && self.state_dir.is_absolute()
+                && self.guest_ssh_private_key.is_absolute()
+                && self.guest_ssh_host_public_key.is_absolute(),
+            "run contract paths must be absolute"
+        );
+        Ok(())
     }
 
     pub fn ensure_current_host_boot(&self) -> Result<()> {
@@ -143,9 +213,11 @@ impl VmController {
         &self.config
     }
 
-    pub fn create_overlay(&self) -> Result<()> {
+    pub fn create_overlay(&self, source_workspace: &Path) -> Result<()> {
+        let _lock = RunLock::exclusive(&self.config.state_dir, "create-run")?;
         let paths = self.config.paths();
         ensure!(!paths.overlay.exists(), "run overlay already exists");
+        initialize_workspace(&self.config, source_workspace)?;
         self.config.save()?;
         let output = Command::new("qemu-img")
             .args(["create", "-f", "qcow2", "-F", "qcow2", "-b"])
@@ -165,6 +237,13 @@ impl VmController {
     pub async fn start(&self) -> Result<()> {
         self.config.ensure_current_host_boot()?;
         require_linux()?;
+        let _lock = RunLock::exclusive(&self.config.state_dir, "start")?;
+        self.start_unlocked().await
+    }
+
+    async fn start_unlocked(&self) -> Result<()> {
+        self.config.ensure_current_host_boot()?;
+        require_linux()?;
         let paths = self.config.paths();
         ensure!(
             paths.overlay.is_file(),
@@ -174,7 +253,7 @@ impl VmController {
         remove_stale_sockets(&paths)?;
 
         if let Err(error) = self.launch(&paths).await {
-            let cleanup = self.stop().await;
+            let cleanup = self.stop_unlocked().await;
             return match cleanup {
                 Ok(()) => Err(error),
                 Err(cleanup_error) => {
@@ -206,12 +285,12 @@ impl VmController {
             host_uid != 0 && host_gid != 0,
             "AVM must run as a non-root user to map the writable guest workspace safely"
         );
-        ensure_candidate_identity(&self.config.candidate_workspace, host_uid, host_gid)?;
+        ensure_candidate_identity(&self.config.workspace_root, host_uid, host_gid)?;
         let virtiofs_log = log_file(&paths.virtiofs_log)?;
         let virtiofs = Command::new(virtiofsd_binary())
             .args(virtiofsd_args(
                 paths,
-                &self.config.candidate_workspace,
+                &self.config.workspace_root,
                 host_uid,
                 host_gid,
             ))
@@ -251,9 +330,9 @@ impl VmController {
             "device_add",
             Some(json!({
                 "driver": "vhost-user-fs-pci",
-                "id": "candidate-fs",
+                "id": "workspace-fs",
                 "chardev": "charfs",
-                "tag": "candidate",
+                "tag": "workspace-root",
                 "bus": "fs-root-port",
             })),
         )
@@ -263,6 +342,12 @@ impl VmController {
     }
 
     pub async fn stop(&self) -> Result<()> {
+        let _lock = RunLock::exclusive(&self.config.state_dir, "stop")?;
+        self.ensure_no_active_commands()?;
+        self.stop_unlocked().await
+    }
+
+    async fn stop_unlocked(&self) -> Result<()> {
         let paths = self.config.paths();
         if paths.qmp_socket.exists() {
             if let Ok(mut qmp) = QmpClient::connect(&paths.qmp_socket).await {
@@ -279,13 +364,17 @@ impl VmController {
     }
 
     pub async fn reset(&self) -> Result<()> {
+        let _lock = RunLock::exclusive(&self.config.state_dir, "reset")?;
+        self.ensure_no_active_commands()?;
         self.config.ensure_current_host_boot()?;
         require_linux()?;
-        self.stop().await?;
-        self.start().await
+        self.stop_unlocked().await?;
+        self.start_unlocked().await
     }
 
     pub async fn restore_checkpoint_in_place(&self) -> Result<()> {
+        let _lock = RunLock::exclusive(&self.config.state_dir, "restore-checkpoint")?;
+        self.ensure_no_active_commands()?;
         self.config.ensure_current_host_boot()?;
         require_linux()?;
         let paths = self.config.paths();
@@ -302,6 +391,8 @@ impl VmController {
     }
 
     pub async fn checkpoint(&self) -> Result<()> {
+        let _lock = RunLock::exclusive(&self.config.state_dir, "checkpoint")?;
+        self.ensure_no_active_commands()?;
         self.config.ensure_current_host_boot()?;
         require_linux()?;
         let paths = self.config.paths();
@@ -319,6 +410,211 @@ impl VmController {
 
     pub fn is_running(&self) -> bool {
         read_pid(&self.config.paths().qemu_pid).is_some_and(process_exists)
+    }
+
+    pub async fn destroy(self) -> Result<()> {
+        let _lock = RunLock::exclusive(&self.config.state_dir, "destroy-run")?;
+        self.ensure_no_active_commands()?;
+        if self.is_running() {
+            self.stop_unlocked().await?;
+        }
+        let saved = std::fs::canonicalize(self.config.paths().config)?;
+        let state = std::fs::canonicalize(&self.config.state_dir)?;
+        ensure!(
+            saved.parent() == Some(state.as_path()),
+            "run.json is not directly inside the state directory"
+        );
+        ensure!(
+            state.file_name().and_then(|name| name.to_str()) == Some(&self.config.id.to_string()),
+            "state directory does not match run ID"
+        );
+        std::fs::remove_dir_all(&state)
+            .with_context(|| format!("destroy run {}", state.display()))?;
+        Ok(())
+    }
+
+    fn ensure_no_active_commands(&self) -> Result<()> {
+        let active = active_command_ids(&self.config)?;
+        ensure!(
+            active.is_empty(),
+            "run has active guest commands: {}; wait for or cancel them before changing VM state",
+            active.join(", ")
+        );
+        Ok(())
+    }
+
+    pub fn promote_base(&self, output: &Path, confirm_sanitized: bool) -> Result<PromotedBase> {
+        self.config.ensure_current_host_boot()?;
+        require_linux()?;
+        ensure!(confirm_sanitized, "promotion requires --confirm-sanitized");
+        let _lock = RunLock::exclusive(&self.config.state_dir, "promote-base")?;
+        ensure!(
+            !self.is_running(),
+            "VM must be stopped before base promotion"
+        );
+        let overlay = self.config.paths().overlay;
+        let metadata = std::fs::symlink_metadata(&overlay).context("run overlay does not exist")?;
+        ensure!(
+            metadata.is_file() && !metadata.file_type().is_symlink(),
+            "run overlay must be a regular non-symlink file"
+        );
+        ensure!(
+            output.extension().and_then(|value| value.to_str()) == Some("qcow2"),
+            "promoted base output must end in .qcow2"
+        );
+        ensure!(!output.exists(), "promoted base output already exists");
+        let parent = output
+            .parent()
+            .context("promoted base output has no parent")?
+            .canonicalize()?;
+        let output = parent.join(
+            output
+                .file_name()
+                .context("promoted base output has no file name")?,
+        );
+        ensure!(
+            !output.starts_with(&self.config.state_dir),
+            "promoted base must be outside the source run state"
+        );
+        let manifest_path = PathBuf::from(format!("{}.avm.json", output.display()));
+        let checksum_path = PathBuf::from(format!("{}.sha256", output.display()));
+        ensure!(
+            !manifest_path.exists() && !checksum_path.exists(),
+            "promoted base sidecar already exists"
+        );
+        ensure!(
+            !output.starts_with(&self.config.candidate_workspace),
+            "promoted base must be outside the candidate workspace"
+        );
+
+        let chain = qemu_img_backing_chain(&overlay)?;
+        ensure!(
+            chain.len() >= 2,
+            "run overlay has no readable backing image"
+        );
+        ensure!(
+            chain.iter().all(|entry| entry["format"] == "qcow2"),
+            "run backing chain contains a non-qcow2 image"
+        );
+        ensure!(
+            chain
+                .iter()
+                .all(|entry| entry.get("encrypted").and_then(Value::as_bool) != Some(true)),
+            "encrypted run images cannot be promoted"
+        );
+        let configured_base = self.config.base_image.canonicalize()?;
+        let chain_contains_base = chain.iter().any(|entry| {
+            entry["filename"]
+                .as_str()
+                .and_then(|path| Path::new(path).canonicalize().ok())
+                .as_ref()
+                == Some(&configured_base)
+        });
+        ensure!(
+            chain_contains_base,
+            "run overlay backing chain does not contain the configured base image"
+        );
+        qemu_img_success(["check", "-f", "qcow2"], &overlay, None)?;
+        let source_info = qemu_img_info(&overlay)?;
+        ensure!(source_info["format"] == "qcow2", "run overlay is not qcow2");
+        let virtual_size = source_info["virtual-size"]
+            .as_u64()
+            .context("qemu-img info omitted virtual-size")?;
+        let staging = parent.join(format!(".avm-promote-{}.qcow2", Uuid::new_v4()));
+        let mut output_created = false;
+        let mut manifest_created = false;
+        let mut checksum_created = false;
+        let result = (|| -> Result<PromotedBase> {
+            let converted = Command::new("qemu-img")
+                .args([
+                    "convert",
+                    "-f",
+                    "qcow2",
+                    "-O",
+                    "qcow2",
+                    "-o",
+                    "lazy_refcounts=on",
+                ])
+                .arg(&overlay)
+                .arg(&staging)
+                .output()
+                .context("launch qemu-img convert")?;
+            ensure!(
+                converted.status.success(),
+                "qemu-img convert failed: {}",
+                String::from_utf8_lossy(&converted.stderr).trim()
+            );
+            qemu_img_success(["check", "-f", "qcow2"], &staging, None)?;
+            let promoted_info = qemu_img_info(&staging)?;
+            ensure!(
+                promoted_info["format"] == "qcow2",
+                "promoted image is not qcow2"
+            );
+            ensure!(
+                promoted_info["virtual-size"].as_u64() == Some(virtual_size),
+                "promoted image virtual size changed"
+            );
+            ensure!(
+                promoted_info.get("backing-filename").is_none(),
+                "promoted image still has a backing file"
+            );
+            ensure!(
+                promoted_info
+                    .get("snapshots")
+                    .and_then(Value::as_array)
+                    .is_none_or(Vec::is_empty),
+                "promoted image retained internal snapshots"
+            );
+            qemu_img_success(
+                ["compare", "-f", "qcow2", "-F", "qcow2"],
+                &overlay,
+                Some(&staging),
+            )?;
+            let sha256 = file_sha256(&staging)?;
+            File::open(&staging)?.sync_all()?;
+            std::fs::hard_link(&staging, &output)
+                .context("publish promoted base without replacement")?;
+            output_created = true;
+            let mut permissions = std::fs::metadata(&output)?.permissions();
+            permissions.set_readonly(true);
+            std::fs::set_permissions(&output, permissions)?;
+            let promoted = PromotedBase {
+                source_run_id: self.config.id,
+                base_image: output.clone(),
+                format: "qcow2".into(),
+                virtual_size,
+                sha256,
+                manifest: manifest_path.clone(),
+                checksum_file: checksum_path.clone(),
+            };
+            write_new_synced(&manifest_path, &serde_json::to_vec_pretty(&promoted)?)?;
+            manifest_created = true;
+            write_new_synced(
+                &checksum_path,
+                format!(
+                    "{}  {}\n",
+                    promoted.sha256,
+                    output.file_name().unwrap().to_string_lossy()
+                )
+                .as_bytes(),
+            )?;
+            checksum_created = true;
+            File::open(&parent)?.sync_all()?;
+            Ok(promoted)
+        })();
+        if result.is_err() {
+            if output_created {
+                let _ = std::fs::remove_file(&output);
+            }
+            if manifest_created {
+                let _ = std::fs::remove_file(&manifest_path);
+            }
+            if checksum_created {
+                let _ = std::fs::remove_file(&checksum_path);
+            }
+        }
+        let _ = std::fs::remove_file(&staging);
+        result
     }
 
     pub fn qemu_args(&self) -> Vec<String> {
@@ -394,6 +690,167 @@ impl VmController {
             "-S".into(),
         ]
     }
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromotedBase {
+    pub source_run_id: Uuid,
+    pub base_image: PathBuf,
+    pub format: String,
+    pub virtual_size: u64,
+    pub sha256: String,
+    pub manifest: PathBuf,
+    pub checksum_file: PathBuf,
+}
+
+fn qemu_img_info(path: &Path) -> Result<Value> {
+    let output = Command::new("qemu-img")
+        .args(["info", "--output=json"])
+        .arg(path)
+        .output()
+        .context("launch qemu-img info")?;
+    ensure!(
+        output.status.success(),
+        "qemu-img info failed: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    serde_json::from_slice(&output.stdout).context("decode qemu-img info")
+}
+
+fn qemu_img_backing_chain(path: &Path) -> Result<Vec<Value>> {
+    let output = Command::new("qemu-img")
+        .args(["info", "--output=json", "--backing-chain"])
+        .arg(path)
+        .output()
+        .context("launch qemu-img backing-chain inspection")?;
+    ensure!(
+        output.status.success(),
+        "qemu-img backing-chain inspection failed: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    serde_json::from_slice(&output.stdout).context("decode qemu-img backing chain")
+}
+
+fn qemu_img_success<const N: usize>(
+    arguments: [&str; N],
+    first: &Path,
+    second: Option<&Path>,
+) -> Result<()> {
+    let mut command = Command::new("qemu-img");
+    command.args(arguments).arg(first);
+    if let Some(second) = second {
+        command.arg(second);
+    }
+    let output = command.output().context("launch qemu-img")?;
+    ensure!(
+        output.status.success(),
+        "qemu-img failed: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    Ok(())
+}
+
+fn write_new_synced(path: &Path, bytes: &[u8]) -> Result<()> {
+    let mut file = OpenOptions::new().create_new(true).write(true).open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+fn verify_base_integrity(base_image: &Path) -> Result<()> {
+    let checksum_path = PathBuf::from(format!("{}.sha256", base_image.display()));
+    if !checksum_path.is_file() {
+        return Ok(());
+    }
+    let checksum = std::fs::read_to_string(&checksum_path)?;
+    let expected = checksum
+        .split_whitespace()
+        .next()
+        .context("base checksum sidecar is empty")?;
+    ensure!(
+        expected.len() == 64 && expected.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "base checksum sidecar is invalid"
+    );
+    ensure!(
+        file_sha256(base_image)? == expected.to_ascii_lowercase(),
+        "base image failed SHA-256 verification"
+    );
+    Ok(())
+}
+
+fn validate_guest_state_paths(mut paths: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
+    paths.sort();
+    paths.dedup();
+    for path in &paths {
+        ensure!(
+            !path.as_os_str().is_empty()
+                && path
+                    .components()
+                    .all(|component| matches!(component, std::path::Component::Normal(_))),
+            "guest state paths must be non-empty relative paths without '..': {}",
+            path.display()
+        );
+    }
+    for pair in paths.windows(2) {
+        ensure!(
+            !pair[1].starts_with(&pair[0]),
+            "guest state paths cannot overlap: {} and {}",
+            pair[0].display(),
+            pair[1].display()
+        );
+    }
+    Ok(paths)
+}
+
+fn initialize_workspace(config: &RunConfig, source: &Path) -> Result<()> {
+    use std::os::unix::fs::symlink;
+
+    let source = source
+        .canonicalize()
+        .context("canonicalize source workspace")?;
+    ensure!(source.is_dir(), "source workspace must be a directory");
+    ensure!(
+        !config.workspace_root.exists(),
+        "workspace root already exists"
+    );
+    let generation = config.workspace_root.join("generations/bootstrap");
+    std::fs::create_dir_all(&generation)?;
+    std::fs::create_dir_all(config.workspace_root.join("state"))?;
+    let copied = Command::new("rsync")
+        .args(["--archive", "--exclude=.git"])
+        .arg(format!("{}/", source.display()))
+        .arg(format!("{}/", generation.display()))
+        .status()
+        .context("copy source workspace")?;
+    ensure!(
+        copied.success(),
+        "source workspace copy failed with {copied}"
+    );
+    for relative in &config.guest_state_paths {
+        let generation_path = generation.join(relative);
+        let state_path = config.workspace_root.join("state").join(relative);
+        if let Some(parent) = state_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        if generation_path.exists() {
+            std::fs::rename(&generation_path, &state_path)?;
+        } else {
+            std::fs::create_dir_all(&state_path)?;
+        }
+        if let Some(parent) = generation_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut target = PathBuf::new();
+        for _ in 0..=relative.components().count() {
+            target.push("..");
+        }
+        target.push("state");
+        target.push(relative);
+        symlink(target, generation_path)?;
+    }
+    symlink("generations/bootstrap", &config.candidate_workspace)?;
+    Ok(())
 }
 
 fn require_linux() -> Result<()> {
@@ -484,7 +941,7 @@ fn canonicalize_future_path(path: &Path) -> Result<PathBuf> {
     Ok(canonical)
 }
 
-fn current_host_boot_id() -> Result<Option<String>> {
+pub fn current_host_boot_id() -> Result<Option<String>> {
     #[cfg(target_os = "linux")]
     {
         let boot_id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
@@ -580,13 +1037,19 @@ mod tests {
         let config = RunConfig {
             id: Uuid::nil(),
             base_image: "/images/base.qcow2".into(),
-            candidate_workspace: "/candidate".into(),
+            workspace_root: "/outside/run/workspace".into(),
+            candidate_workspace: "/outside/run/workspace/current".into(),
+            guest_state_paths: vec![],
             state_dir: "/outside/run".into(),
             memory_mib: 2048,
             cpus: 2,
             width: 1280,
             height: 720,
             host_boot_id: None,
+            guest_ssh_port: 2222,
+            guest_ssh_user: "avm".into(),
+            guest_ssh_private_key: "/keys/guest".into(),
+            guest_ssh_host_public_key: "/keys/host.pub".into(),
         };
         let args = VmController::new(config.clone()).qemu_args().join(" ");
         assert!(args.contains("q35,accel=kvm"));
@@ -614,7 +1077,7 @@ mod tests {
         assert!(args.ends_with("-S"));
 
         let paths = config.paths();
-        let virtiofs = virtiofsd_args(&paths, &config.candidate_workspace, 1001, 1002);
+        let virtiofs = virtiofsd_args(&paths, &config.workspace_root, 1001, 1002);
         assert!(virtiofs.contains(&"--sandbox=namespace".to_owned()));
         assert!(virtiofs.contains(&"--uid-map=:1000:1001:1:".to_owned()));
         assert!(virtiofs.contains(&"--gid-map=:1000:1002:1:".to_owned()));
@@ -625,7 +1088,15 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let base = temp.path().join("base.qcow2");
         std::fs::write(&base, b"not a real image").unwrap();
-        let error = RunConfig::new(&base, temp.path(), &temp.path().join("state")).unwrap_err();
+        let error = RunConfig::new(
+            &base,
+            temp.path(),
+            &temp.path().join("state"),
+            vec![],
+            Path::new("/key"),
+            Path::new("/host-key"),
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("outside"));
     }
 
@@ -635,8 +1106,60 @@ mod tests {
         let base = temp.path().join("base.qcow2");
         std::fs::write(&base, b"not a real image").unwrap();
         let external_state = tempfile::tempdir().unwrap();
-        let error = RunConfig::new(&base, temp.path(), external_state.path()).unwrap_err();
+        let error = RunConfig::new(
+            &base,
+            temp.path(),
+            external_state.path(),
+            vec![],
+            Path::new("/key"),
+            Path::new("/host-key"),
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("base image must be outside"));
+    }
+
+    #[test]
+    fn base_checksum_sidecar_is_enforced() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().join("base.qcow2");
+        std::fs::write(&base, b"base bytes").unwrap();
+        std::fs::write(
+            format!("{}.sha256", base.display()),
+            format!("{}  base.qcow2\n", file_sha256(&base).unwrap()),
+        )
+        .unwrap();
+        verify_base_integrity(&base).unwrap();
+        std::fs::write(&base, b"tampered").unwrap();
+        assert!(verify_base_integrity(&base).is_err());
+    }
+
+    #[test]
+    fn run_configuration_rejects_missing_contract_fields() {
+        let value = json!({
+            "id": Uuid::nil(),
+            "baseImage": "/images/base.qcow2",
+            "candidateWorkspace": "/candidate",
+            "stateDir": "/outside/run",
+            "memoryMib": 2048,
+            "cpus": 2,
+            "width": 1280,
+            "height": 720,
+            "hostBootId": null
+        });
+        assert!(serde_json::from_value::<RunConfig>(value).is_err());
+    }
+
+    #[test]
+    fn guest_state_paths_must_be_relative_and_disjoint() {
+        assert!(validate_guest_state_paths(vec![PathBuf::from("../cache")]).is_err());
+        assert!(
+            validate_guest_state_paths(vec![PathBuf::from("cache"), PathBuf::from("cache/npm")])
+                .is_err()
+        );
+        assert_eq!(
+            validate_guest_state_paths(vec![PathBuf::from("tmp"), PathBuf::from("cache")]).unwrap(),
+            vec![PathBuf::from("cache"), PathBuf::from("tmp")]
+        );
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -645,13 +1168,19 @@ mod tests {
         let config = RunConfig {
             id: Uuid::nil(),
             base_image: "/images/base.qcow2".into(),
-            candidate_workspace: "/candidate".into(),
+            workspace_root: "/outside/run/workspace".into(),
+            candidate_workspace: "/outside/run/workspace/current".into(),
+            guest_state_paths: vec![],
             state_dir: "/outside/run".into(),
             memory_mib: 2048,
             cpus: 2,
             width: 1280,
             height: 720,
             host_boot_id: None,
+            guest_ssh_port: 2222,
+            guest_ssh_user: "avm".into(),
+            guest_ssh_private_key: "/keys/guest".into(),
+            guest_ssh_host_public_key: "/keys/host.pub".into(),
         };
         let error = VmController::new(config).start().await.unwrap_err();
         assert_eq!(error.to_string(), "QEMU/KVM runs require a Linux host");

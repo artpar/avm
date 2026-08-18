@@ -5,7 +5,7 @@
 Required host packages include QEMU/KVM, `cloud-image-utils`, OpenSSH client, and curl. Run:
 
 ```sh
-vm/image/build-base.sh /var/lib/avm/images/noble-v1
+vm/image/build-base.sh /var/lib/avm/images/noble
 ```
 
 Provisioning is allowed up to 30 minutes by default so that snap and package
@@ -15,9 +15,18 @@ the host needs a different operational bound. A timeout reports the current
 `cloud-init status --long` plus the tail of both guest serial and QEMU logs;
 completed cloud-init error states fail the build with the same diagnostics.
 
-The output directory contains `avm-base.qcow2`, its checksum, and a generated SSH key pair. Keep the private key outside candidate repositories. Each experiment uses a qcow2 overlay; the base is never passed writable to QEMU.
+The output directory contains `avm-base.qcow2`, its checksum, a generated SSH
+key pair, and the authenticated guest Ed25519 host public key. Keep the private
+key outside candidate repositories. AVM pins the host public key per run; it
+does not disable host-key verification. Each experiment uses a qcow2 overlay;
+the base is never passed writable to QEMU.
 
-The guest provides a stock Weston desktop at 1280×720 and scale 1, Chromium with CDP on guest port 9222, software WebGL2, SSH, deterministic locale/fonts, common development runtimes, XFCE Terminal, Galculator, ALSA tooling with an Intel HDA guest device, and a `candidate` virtiofs mount at `/workspace`.
+The guest provides a stock Weston desktop at 1280×720 and scale 1, Chromium with CDP on guest port 9222, software WebGL2, SSH, deterministic locale/fonts, common development runtimes, XFCE Terminal, Galculator, ALSA tooling with an Intel HDA guest device, and an AVM workspace-root virtiofs mount at `/avm-workspace`. `/workspace` points to its atomically selected `current` generation.
+
+The image also installs the `avm-command-agent`. AVM invokes only
+this fixed endpoint over verified SSH and sends framed JSON argv requests. The
+agent runs commands as the ordinary `avm` user, records durable command state,
+and retains bounded stdout/stderr for later wait, attach, and cancellation.
 
 WebGL2 uses Chromium's explicit SwiftShader fallback while QEMU remains on the
 2D `virtio-vga` and shared-memory D-Bus scanout path. This preserves AVM's

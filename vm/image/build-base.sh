@@ -47,8 +47,10 @@ fi
 
 public_key=$(<"$ssh_key.pub")
 accessibility_sensor=$(base64 -w0 "$script_dir/../guest/avm-accessibility-sensor.py")
+command_agent=$(base64 -w0 "$script_dir/../guest/avm-command-agent.py")
 sed -e "s|@@SSH_PUBLIC_KEY@@|$public_key|" \
   -e "s|@@ACCESSIBILITY_SENSOR_B64@@|$accessibility_sensor|" \
+  -e "s|@@COMMAND_AGENT_B64@@|$command_agent|" \
   "$script_dir/user-data.yaml" >"$output_dir/user-data"
 cp "$script_dir/meta-data.yaml" "$output_dir/meta-data"
 cloud-localds "$seed_image" "$output_dir/user-data" "$output_dir/meta-data"
@@ -66,6 +68,10 @@ build_pid=$(<"$output_dir/build-qemu.pid")
 "$script_dir/wait-for-provisioning.sh" \
   "$ssh_key" "$build_pid" "$guest_serial_log" "$build_log"
 
+ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no \
+  -o UserKnownHostsFile=/dev/null -i "$ssh_key" -p 22222 avm@127.0.0.1 \
+  'sudo cat /etc/ssh/ssh_host_ed25519_key.pub' \
+  >"$output_dir/avm_ssh_host_ed25519_key.pub"
 ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no \
   -o UserKnownHostsFile=/dev/null -i "$ssh_key" -p 22222 avm@127.0.0.1 \
   'sudo systemctl poweroff'

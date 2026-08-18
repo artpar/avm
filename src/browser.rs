@@ -5,12 +5,13 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     process::Command,
+    time::{Duration, timeout},
 };
 use uuid::Uuid;
 
@@ -18,6 +19,11 @@ use crate::{
     event::{EventSink, Provenance, RawEvent},
     storage::ArtifactStore,
 };
+
+#[cfg(not(test))]
+const OBSERVER_STARTUP_SHUTDOWN_GRACE_MS: u64 = 40_000;
+#[cfg(test)]
+const OBSERVER_STARTUP_SHUTDOWN_GRACE_MS: u64 = 100;
 
 #[derive(Clone, Debug)]
 pub struct BrowserObserverOptions {
@@ -464,43 +470,68 @@ pub async fn run_browser_observer(
     };
     let mut event_count = 0_u64;
     let mut lines = BufReader::new(stdout).lines();
-    while let Some(line) = lines.next_line().await? {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let sensor: BrowserSensorEvent =
-            serde_json::from_str(&line).context("decode browser observer JSONL")?;
-        ensure!(!sensor.source.is_empty(), "browser event source is empty");
-        ensure!(!sensor.kind.is_empty(), "browser event kind is empty");
-        let mut event =
-            RawEvent::observed(session_id, &sensor.source, &sensor.kind, sensor.payload);
-        event.source_timestamp = sensor.source_timestamp;
-        event.source_sequence = Some(event_count);
-        for artifact in sensor.artifacts {
-            let path = artifact.path.canonicalize()?;
-            ensure!(
-                path.starts_with(&sensor_artifacts_dir) && path.is_file(),
-                "browser sensor artifact escaped its owned directory"
-            );
-            let artifact_ref = artifacts.put(&std::fs::read(&path)?)?;
-            event.artifact_refs.push(artifact_ref);
-            if let Some(payload) = event.payload.as_object_mut() {
-                payload
-                    .entry("sensorArtifacts")
-                    .or_insert_with(|| json!([]))
-                    .as_array_mut()
-                    .context("sensorArtifacts payload is not an array")?
-                    .push(json!({
-                        "role": artifact.role,
-                        "mimeType": artifact.mime_type,
-                    }));
+    let observer = async {
+        while let Some(line) = lines.next_line().await? {
+            if line.trim().is_empty() {
+                continue;
             }
-            std::fs::remove_file(path)?;
+            let sensor: BrowserSensorEvent =
+                serde_json::from_str(&line).context("decode browser observer JSONL")?;
+            ensure!(!sensor.source.is_empty(), "browser event source is empty");
+            ensure!(!sensor.kind.is_empty(), "browser event kind is empty");
+            let mut event =
+                RawEvent::observed(session_id, &sensor.source, &sensor.kind, sensor.payload);
+            event.source_timestamp = sensor.source_timestamp;
+            event.source_sequence = Some(event_count);
+            for artifact in sensor.artifacts {
+                let path = artifact.path.canonicalize()?;
+                ensure!(
+                    path.starts_with(&sensor_artifacts_dir) && path.is_file(),
+                    "browser sensor artifact escaped its owned directory"
+                );
+                let artifact_ref = artifacts.put(&std::fs::read(&path)?)?;
+                event.artifact_refs.push(artifact_ref);
+                if let Some(payload) = event.payload.as_object_mut() {
+                    payload
+                        .entry("sensorArtifacts")
+                        .or_insert_with(|| json!([]))
+                        .as_array_mut()
+                        .context("sensorArtifacts payload is not an array")?
+                        .push(json!({
+                            "role": artifact.role,
+                            "mimeType": artifact.mime_type,
+                        }));
+                }
+                std::fs::remove_file(path)?;
+            }
+            sink.record(event)?;
+            event_count += 1;
         }
-        sink.record(event)?;
-        event_count += 1;
-    }
-    let status = child.wait().await?;
+        child.wait().await.map_err(anyhow::Error::from)
+    };
+    let status = if options.duration_ms == 0 {
+        observer.await?
+    } else {
+        let watchdog_ms = options
+            .duration_ms
+            .saturating_add(OBSERVER_STARTUP_SHUTDOWN_GRACE_MS);
+        match timeout(Duration::from_millis(watchdog_ms), observer).await {
+            Ok(result) => result?,
+            Err(_) => {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                stderr_task.abort();
+                let _ = stderr_task.await;
+                sink.record(RawEvent::observed(
+                    session_id,
+                    "browser",
+                    "browser.observer.timed_out",
+                    json!({"durationMs": options.duration_ms, "watchdogMs": watchdog_ms}),
+                ))?;
+                bail!("browser observer exceeded duration and shutdown grace ({watchdog_ms}ms)");
+            }
+        }
+    };
     let stderr_lines = stderr_task
         .await
         .context("join browser stderr recorder")??;
@@ -573,7 +604,7 @@ printf '%s' 'trace bytes' > "$trace"
                 endpoint: "http://127.0.0.1:9222".into(),
                 trace_path: trace,
                 sensor_artifacts_dir: temp.path().join("sensor-artifacts"),
-                duration_ms: 1,
+                duration_ms: 0,
             },
         )
         .await
@@ -610,13 +641,41 @@ printf '%s' 'trace bytes' > "$trace"
                 endpoint: "http://127.0.0.1:9223".into(),
                 trace_path: temp.path().join("trace.zip"),
                 sensor_artifacts_dir: temp.path().join("sensor-artifacts"),
-                duration_ms: 1,
+                duration_ms: 0,
             },
         )
         .await
         .unwrap_err();
         assert!(error.to_string().contains("CDP transport reset"));
         assert_eq!(sink.events()[0].kind, "browser.observer.stderr");
+    }
+
+    #[tokio::test]
+    async fn terminates_an_observer_that_ignores_duration() {
+        let temp = tempfile::tempdir().unwrap();
+        let script = temp.path().join("stuck-observer.sh");
+        std::fs::write(&script, "#!/bin/sh\nexec sleep 60\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let sink = Arc::new(MemoryEventSink::default());
+        let error = run_browser_observer(
+            Uuid::new_v4(),
+            sink.clone(),
+            Arc::new(ArtifactStore::new(temp.path().join("artifacts")).unwrap()),
+            BrowserObserverOptions {
+                command: vec![script.display().to_string()],
+                endpoint: "http://127.0.0.1:9223".into(),
+                trace_path: temp.path().join("trace.zip"),
+                sensor_artifacts_dir: temp.path().join("sensor-artifacts"),
+                duration_ms: 1,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("shutdown grace"));
+        assert_eq!(
+            sink.events().last().unwrap().kind,
+            "browser.observer.timed_out"
+        );
     }
 
     #[test]

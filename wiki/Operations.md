@@ -75,3 +75,25 @@ and keep it active until after the guest response.
 - Stop nested QEMU and the outer cloud instance when idle.
 - Never publish VM disks, SSH private keys, raw run stores, or private evidence.
 - Treat short performance measurements as scale estimates, not causal proof.
+
+## Tracked guest commands
+
+Use `avm exec` instead of nested ad-hoc SSH for builds and tests. A detached
+command returns an ID that remains available through `exec-list`, `exec-status`,
+`exec-wait`, `exec-attach`, and `exec-cancel`. VM reset, checkpoint, restore,
+stop, and destruction reject while tracked commands are active.
+
+## Publication and reusable bases
+
+`remote-publish` creates a complete immutable source generation and atomically
+switches the stable workspace link. Paths declared with `--guest-state-path`
+live in a separate persistent-state tree and are linked into every generation.
+Publication and rollback reject while tracked guest commands are active.
+Unchanged publications return a no-op receipt before archive creation unless
+`--force` is supplied. Use `remote-connect`, `remote-connect-status`, and
+`remote-connect-stop` for AVM-owned browser and application forwarding.
+
+Before `promote-base`, power off the guest cleanly and remove credentials,
+browser profiles, cookies, histories, SSH keys, registry credentials, cloud
+configuration, logs, caches, swap, and other sensitive disk state. The
+`--confirm-sanitized` flag is an operator attestation, not an AVM secret scan.

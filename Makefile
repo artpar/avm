@@ -56,6 +56,7 @@ test-scripts: ## Validate release-facing shell helpers
 	bash scripts/linux-smoke.test.sh
 	bash vm/image/wait-for-provisioning.test.sh
 	python3 vm/guest/avm-accessibility-sensor.test.py
+	python3 vm/guest/avm-command-agent.test.py
 	python3 scripts/png-region-check.test.py
 	python3 vm/image/guest-config.test.py
 
@@ -101,7 +102,7 @@ package: release ## Create a checksummed release archive for the host target
 		vm/image/meta-data.yaml vm/image/README.md \
 		vm/image/ubuntu-noble-amd64.lock vm/image/user-data.yaml \
 		"$(PACKAGE_DIR)/avm-v$(VERSION)-$(TARGET)/vm/image/"
-	cp vm/guest/avm-accessibility-sensor.py \
+	cp vm/guest/avm-accessibility-sensor.py vm/guest/avm-command-agent.py \
 		"$(PACKAGE_DIR)/avm-v$(VERSION)-$(TARGET)/vm/guest/"
 	tar -C "$(PACKAGE_DIR)" -czf "$(PACKAGE_DIR)/$(ARCHIVE)" "avm-v$(VERSION)-$(TARGET)"
 	cd "$(PACKAGE_DIR)" && shasum -a 256 "$(ARCHIVE)" > "$(ARCHIVE).sha256"

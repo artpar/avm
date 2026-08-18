@@ -42,17 +42,17 @@ write_files:
     permissions: '0644'
     content: |
       SUBSYSTEM=="virtio-ports", ATTR{name}=="org.avm.accessibility", GROUP="dialout", MODE="0660"
-  - path: /etc/systemd/system/workspace.mount
+  - path: '/etc/systemd/system/avm\x2dworkspace.mount'
     permissions: '0644'
     content: |
       [Unit]
-      Description=Candidate repository supplied by host
+      Description=AVM workspace root supplied by host
       After=local-fs-pre.target
       Before=weston.service
 
       [Mount]
-      What=candidate
-      Where=/workspace
+      What=workspace-root
+      Where=/avm-workspace
       Type=virtiofs
       Options=rw,nosuid,nodev
 
@@ -62,6 +62,7 @@ write_files:
     permissions: '0644'
     content: |
       d /run/user/1000 0700 avm avm -
+      L /workspace - - - - /avm-workspace/current
   - path: /etc/systemd/system/weston.service
     permissions: '0644'
     content: |
@@ -149,6 +150,10 @@ write_files:
     permissions: '0755'
     encoding: b64
     content: @@ACCESSIBILITY_SENSOR_B64@@
+  - path: /usr/local/bin/avm-command-agent
+    permissions: '0755'
+    encoding: b64
+    content: @@COMMAND_AGENT_B64@@
   - path: /usr/local/bin/avm-desktop-autolaunch
     permissions: '0755'
     content: |
@@ -162,10 +167,12 @@ write_files:
       exec /usr/local/bin/avm-browser
 
 runcmd:
-  - [mkdir, -p, /workspace]
+  - [mkdir, -p, /avm-workspace]
+  - [mkdir, -p, /var/lib/avm/commands]
+  - [chmod, '0700', /var/lib/avm/commands]
   - [locale-gen, en_US.UTF-8]
   - [systemctl, enable, ssh.service]
-  - [systemctl, enable, workspace.mount]
+  - [systemctl, enable, 'avm\x2dworkspace.mount']
   - [systemctl, enable, weston.service]
   - [systemctl, enable, avm-accessibility-sensor.service]
   - [systemctl, set-default, graphical.target]
