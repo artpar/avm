@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 
 use crate::{
     fingerprint::repository_fingerprint,
+    guest_command::GuestCommandClient,
     qmp::QmpClient,
     remote::RemoteChannelConfig,
     vm::{RunConfig, VmController, current_host_boot_id},
@@ -279,6 +280,40 @@ pub async fn diagnose_run(run_path: &Path, channel_path: Option<&Path>) -> Resul
             CheckStatus::Skip,
             true,
             "guest SSH skipped because the VM is stopped",
+            json!({}),
+            vec![],
+        ));
+    }
+    if running && ssh_configured {
+        checks.push(
+            match GuestCommandClient::new(config.clone()).and_then(|client| client.health()) {
+                Ok(evidence) => check(
+                    "guest.command_agent",
+                    CheckStatus::Pass,
+                    true,
+                    "command agent accepts the canonical workspace",
+                    evidence,
+                    vec![],
+                ),
+                Err(error) => check(
+                    "guest.command_agent",
+                    CheckStatus::Fail,
+                    true,
+                    "command agent execution path is unusable",
+                    json!({"error": error.to_string()}),
+                    vec![remediation(
+                        "Rebuild the guest image and create a new run",
+                        vec!["vm/image/build-base.sh", "OUTPUT_DIRECTORY"],
+                    )],
+                ),
+            },
+        );
+    } else {
+        checks.push(check(
+            "guest.command_agent",
+            CheckStatus::Skip,
+            true,
+            "command-agent probe skipped because the VM or SSH identity is unavailable",
             json!({}),
             vec![],
         ));

@@ -14,6 +14,7 @@ import uuid
 from pathlib import Path
 
 ROOT = Path(os.environ.get("AVM_COMMAND_ROOT", "/var/lib/avm/commands"))
+WORKSPACE = Path("/workspace")
 MAX_REQUEST = 1024 * 1024
 MAX_OUTPUT = 16 * 1024 * 1024
 TERMINAL = {"exited", "cancelled", "failed_to_start", "lost"}
@@ -56,16 +57,26 @@ def request_digest(cwd, argv):
     return hashlib.sha256(encoded.encode()).hexdigest()
 
 
+def resolve_workspace_cwd(requested):
+    workspace = os.path.realpath(WORKSPACE)
+    cwd = os.path.realpath(requested)
+    try:
+        contained = os.path.commonpath((workspace, cwd)) == workspace
+    except ValueError:
+        contained = False
+    if not contained:
+        raise ValueError("cwd must be inside /workspace")
+    if not os.path.isdir(cwd):
+        raise ValueError("cwd does not exist")
+    return workspace, cwd
+
+
 def validate_start(request):
     command_id = str(uuid.UUID(request["commandId"]))
     argv = request.get("argv")
     if not isinstance(argv, list) or not argv or not all(isinstance(value, str) and "\0" not in value for value in argv):
         raise ValueError("argv must be a non-empty string array")
-    cwd = os.path.realpath(request.get("cwd", "/workspace"))
-    if cwd != "/workspace" and not cwd.startswith("/workspace/"):
-        raise ValueError("cwd must be inside /workspace")
-    if not os.path.isdir(cwd):
-        raise ValueError("cwd does not exist")
+    _, cwd = resolve_workspace_cwd(request.get("cwd", str(WORKSPACE)))
     key = request.get("idempotencyKey")
     if key is not None and (not isinstance(key, str) or not key or len(key) > 256):
         raise ValueError("invalid idempotency key")
@@ -264,7 +275,8 @@ def main():
     elif operation == "cancel":
         result = cancel(str(uuid.UUID(request["commandId"])), int(request.get("graceMs", 5000)))
     elif operation == "health":
-        result = {"guestBootId": boot_id(), "user": "avm"}
+        workspace, _ = resolve_workspace_cwd(WORKSPACE)
+        result = {"guestBootId": boot_id(), "user": "avm", "workspaceRoot": workspace}
     else:
         raise ValueError("unsupported operation")
     response(result)
