@@ -5,6 +5,13 @@ All notable changes to AVM are documented here. The project follows
 [Conventional Commits](https://www.conventionalcommits.org/) to automate version
 selection and release notes.
 
+## [0.4.0](https://github.com/artpar/avm/compare/v0.3.1...v0.4.0) (2026-08-18)
+
+
+### Features
+
+* harden remote development lifecycle ([fe6613b](https://github.com/artpar/avm/commit/fe6613b8567495d5565781597b2c97a07bdeb7dc))
+
 ## [0.3.1](https://github.com/artpar/avm/compare/v0.3.0...v0.3.1) (2026-08-15)
 
 
